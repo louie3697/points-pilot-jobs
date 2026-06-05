@@ -1,0 +1,35 @@
+name: cleanup-flights
+
+# Delete flights older than yesterday (UTC) from the MotherDuck `flights` table.
+on:
+  schedule:
+    # Daily at 03:15 UTC. The predicate is date-anchored, so the exact time only
+    # needs to sit safely after 00:00 UTC for "yesterday" to be well-defined.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report rows without deleting"
+        type: boolean
+        default: false
+
+# Never let two cleanup runs overlap on the shared MotherDuck database.
+concurrency:
+  group: cleanup-flights
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Delete stale flights
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: python cleanup_flights.py ${{ inputs.dry_run && '--dry-run' || '' }}
