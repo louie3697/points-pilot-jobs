@@ -13,6 +13,11 @@ on:
         type: boolean
         default: false
 
+# Least-privilege: the job only reads the repo to check out code; the database
+# credential is supplied via the MOTHERDUCK_TOKEN secret, not the GITHUB_TOKEN.
+permissions:
+  contents: read
+
 # Never let two cleanup runs overlap on the shared MotherDuck database.
 concurrency:
   group: cleanup-flights
