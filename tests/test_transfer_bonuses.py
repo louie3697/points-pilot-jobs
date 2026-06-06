@@ -90,10 +90,19 @@ def test_parse_hotel_destination_skipped():
 
 
 def test_parse_unknown_bank_skipped():
-    """'Rove' is not in BANK_MAP → its row is silently skipped."""
-    records = parse_bonuses(HTML_FIXTURE, today=TODAY)
-    # Still only 2 records (Rove→AC skipped along with the hotel rows)
-    assert len(records) == 2
+    """'Rove' is not in BANK_MAP → its row is silently skipped (isolated fixture)."""
+    # Isolated fixture: one unknown-bank row only — verifies bank-skip path independently
+    # of hotel-skip. If BANK_MAP lookup is broken, this returns 1 record (not 0).
+    html = """\
+<html><body>
+<table>
+<tr><td>Point Program</td><td>Bonus Rate</td><td>Airline / Hotel Program</td><td>End Date</td></tr>
+<tr><td>Rove</td><td>25%</td><td>Air Canada Aeroplan</td><td>6/6/26</td></tr>
+</table>
+</body></html>
+"""
+    records = parse_bonuses(html, today=TODAY)
+    assert records == []
 
 
 def test_parse_no_table_raises():
