@@ -30,13 +30,14 @@ from obs import flush, install_log_shipping, ship_metric
 
 logger = logging.getLogger("transfer_bonuses")
 
-SOURCE_URL = "https://travel-on-points.com/current-point-transfer-bonuses/"
+SOURCE_URL = "https://frequentmiler.com/current-point-transfer-bonuses/"
 
-# Site's "Point Program" cell text → bank_programs.id in MotherDuck.
+# Site's "Transfer From" cell text → bank_programs.id in MotherDuck.
 # Keys are lowercased for case-insensitive lookup.
 BANK_MAP: dict[str, int] = {
     "american express": 2,
     "amex": 2,
+    "amex membership rewards": 2,
     "chase": 1,
     "chase ultimate rewards": 1,
     "capital one": 3,
@@ -44,6 +45,7 @@ BANK_MAP: dict[str, int] = {
     "citi": 4,
     "citi thankyou": 4,
     "citi thankyou points": 4,
+    "citi thankyou rewards": 4,
     "bilt": 5,
     "bilt rewards": 5,
     "marriott bonvoy": 6,
@@ -52,13 +54,14 @@ BANK_MAP: dict[str, int] = {
     "wells fargo rewards": 7,
 }
 
-# Site's "Airline / Hotel Program" cell text → transfer_partners.airline_code.
-# Hotel programs (Marriott Bonvoy as destination, Wyndham, etc.) are absent
-# from this map — rows that don't match are silently skipped.
+# Airline/hotel destination text (extracted from the details sentence) →
+# transfer_partners.airline_code. Hotel programs (Marriott Bonvoy, Wyndham, etc.)
+# are absent from this map — rows that don't match are silently skipped.
 AIRLINE_MAP: dict[str, str] = {
     "air canada aeroplan": "AC",
     "aeroplan": "AC",
     "air france/klm flying blue": "AF",
+    "air france klm flying blue": "AF",   # frequentmiler omits the slash
     "air france": "AF",
     "flying blue": "AF",
     "alaska airlines": "AS",
@@ -84,10 +87,12 @@ AIRLINE_MAP: dict[str, str] = {
     "ana": "NH",
     "all nippon airways": "NH",
     "qatar airways": "QR",
+    "qatar privilege club avios": "QR",   # frequentmiler uses this name
     "singapore airlines krisflyer": "SQ",
     "singapore airlines": "SQ",
     "krisflyer": "SQ",
     "turkish airlines miles&smiles": "TK",
+    "turkish airlines miles & smiles": "TK",  # frequentmiler uses spaces around &
     "turkish airlines": "TK",
     "united mileageplus": "UA",
     "united": "UA",
@@ -102,13 +107,22 @@ AIRLINE_MAP: dict[str, str] = {
 def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
     """Parse the first <table> on the page into a list of bonus records.
 
-    Each record is a dict with keys:
+    Page columns (frequentmiler.com):
+        col 0 — Transfer From  (bank/program name)
+        col 1 — Transfer Bonus Details  (full sentence: "N% transfer bonus from X to Y")
+        col 2 — Start Date  (Excel serial prefix + MM/DD/YY, e.g. "4617406/02/26")
+        col 3 — End Date    (same format)
+
+    Each returned record is a dict with keys:
         bank_program_id (int), airline_code (str), bonus_pct (int),
         starts_at (date), ends_at (date), notes (str | None)
 
     Rows whose bank or airline destination is not in the respective map are
     silently skipped (hotel programs, unknown bank programs). Raises ValueError
     if no <table> is found — the page structure changed.
+
+    The `today` parameter is kept for API compatibility; it is used as a fallback
+    starts_at only when the start-date cell cannot be parsed.
     """
     if today is None:
         today = date.today()
@@ -124,7 +138,7 @@ def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
         cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
         if len(cells) < 4:
             continue
-        bank_raw, bonus_raw, airline_raw, end_date_raw = (
+        bank_raw, details_raw, start_date_raw, end_date_raw = (
             cells[0], cells[1], cells[2], cells[3]
         )
 
@@ -134,37 +148,56 @@ def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
             logger.debug("Skipping unknown bank %r", bank_raw)
             continue
 
-        # Airline lookup — strip trailing asterisks/footnote markers first
-        airline_clean = re.sub(r"[*†‡§]+$", "", airline_raw).strip()
-        airline_code = AIRLINE_MAP.get(airline_clean.lower())
+        # Airline — extracted from the details sentence "N% transfer bonus from X to Airline"
+        airline_m = re.search(r" to (.+)$", details_raw)
+        if not airline_m:
+            logger.warning("No airline in details %r — skipping row", details_raw[:80])
+            continue
+        airline_raw = airline_m.group(1).strip()
+        airline_code = AIRLINE_MAP.get(airline_raw.lower())
         if airline_code is None:
             logger.debug("Skipping non-airline destination %r", airline_raw)
             continue
 
-        # Bonus pct — "25%" → 25
-        try:
-            bonus_pct = int(bonus_raw.strip().rstrip("%"))
-        except ValueError:
-            logger.warning("Unexpected bonus_rate %r — skipping row", bonus_raw)
+        # Bonus pct — "25% transfer bonus…" → 25
+        pct_m = re.search(r"(\d+)%", details_raw)
+        if not pct_m:
+            logger.warning("No bonus pct in details %r — skipping row", details_raw[:80])
             continue
+        bonus_pct = int(pct_m.group(1))
 
-        # End date — "6/30/26" → date(2026, 6, 30)
+        # Dates — cells contain an Excel serial prefix followed by MM/DD/YY,
+        # e.g. "4617406/02/26". Extract the human-readable suffix.
+        start_m = re.search(r"(\d{1,2}/\d{2}/\d{2})$", start_date_raw)
         try:
-            ends_at = datetime.strptime(end_date_raw.strip(), "%m/%d/%y").date()
+            starts_at = (
+                datetime.strptime(start_m.group(1), "%m/%d/%y").date()
+                if start_m else today
+            )
+        except ValueError:
+            logger.warning("Unexpected start_date %r — using today", start_date_raw)
+            starts_at = today
+
+        end_m = re.search(r"(\d{1,2}/\d{2}/\d{2})$", end_date_raw)
+        try:
+            ends_at = (
+                datetime.strptime(end_m.group(1), "%m/%d/%y").date()
+                if end_m else None
+            )
         except ValueError:
             logger.warning("Unexpected end_date %r — skipping row", end_date_raw)
             continue
-
-        # Store original cell text in notes if it was altered (e.g. trailing *)
-        notes: str | None = airline_raw if airline_raw != airline_clean else None
+        if ends_at is None:
+            logger.warning("Missing end_date in %r — skipping row", end_date_raw)
+            continue
 
         records.append({
             "bank_program_id": bank_id,
             "airline_code": airline_code,
             "bonus_pct": bonus_pct,
-            "starts_at": today,
+            "starts_at": starts_at,
             "ends_at": ends_at,
-            "notes": notes,
+            "notes": None,
         })
 
     return records
