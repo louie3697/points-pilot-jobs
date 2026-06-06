@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-transfer_bonuses — scrape frequentmiler.com for current transfer bonuses.
+transfer_bonuses — scrape travel-on-points.com for current transfer bonuses.
 
 Snapshot-replaces the `transfer_bonuses` table in MotherDuck for all airlines
 tracked in `transfer_partners`. Runs on GitHub Actions cron (twice monthly) or
@@ -16,21 +16,23 @@ Requires MOTHERDUCK_TOKEN. BETTERSTACK_SOURCE_TOKEN enables metrics/log shipping
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import re
+import subprocess
 import time
 from datetime import date, datetime
 
 import duckdb
-import httpx
+import nodriver as uc
 from bs4 import BeautifulSoup
 
 from obs import flush, install_log_shipping, ship_metric
 
 logger = logging.getLogger("transfer_bonuses")
 
-SOURCE_URL = "https://frequentmiler.com/current-point-transfer-bonuses/"
+SOURCE_URL = "https://travel-on-points.com/current-point-transfer-bonuses/"
 
 # Site's "Transfer From" cell text → bank_programs.id in MotherDuck.
 # Keys are lowercased for case-insensitive lookup.
@@ -107,11 +109,11 @@ AIRLINE_MAP: dict[str, str] = {
 def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
     """Parse the first <table> on the page into a list of bonus records.
 
-    Page columns (frequentmiler.com):
-        col 0 — Transfer From  (bank/program name)
-        col 1 — Transfer Bonus Details  (full sentence: "N% transfer bonus from X to Y")
-        col 2 — Start Date  (Excel serial prefix + MM/DD/YY, e.g. "4617406/02/26")
-        col 3 — End Date    (same format)
+    Page columns (travel-on-points.com):
+        col 0 — Point Program   (bank/program name)
+        col 1 — Bonus Rate      ("25%")
+        col 2 — Airline / Hotel Program
+        col 3 — End Date        ("6/30/26")
 
     Each returned record is a dict with keys:
         bank_program_id (int), airline_code (str), bonus_pct (int),
@@ -120,9 +122,6 @@ def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
     Rows whose bank or airline destination is not in the respective map are
     silently skipped (hotel programs, unknown bank programs). Raises ValueError
     if no <table> is found — the page structure changed.
-
-    The `today` parameter is kept for API compatibility; it is used as a fallback
-    starts_at only when the start-date cell cannot be parsed.
     """
     if today is None:
         today = date.today()
@@ -138,7 +137,7 @@ def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
         cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
         if len(cells) < 4:
             continue
-        bank_raw, details_raw, start_date_raw, end_date_raw = (
+        bank_raw, bonus_raw, airline_raw, end_date_raw = (
             cells[0], cells[1], cells[2], cells[3]
         )
 
@@ -148,56 +147,37 @@ def parse_bonuses(html: str, today: date | None = None) -> list[dict]:
             logger.debug("Skipping unknown bank %r", bank_raw)
             continue
 
-        # Airline — extracted from the details sentence "N% transfer bonus from X to Airline"
-        airline_m = re.search(r" to (.+)$", details_raw)
-        if not airline_m:
-            logger.warning("No airline in details %r — skipping row", details_raw[:80])
-            continue
-        airline_raw = airline_m.group(1).strip()
-        airline_code = AIRLINE_MAP.get(airline_raw.lower())
+        # Airline lookup — strip trailing asterisks/footnote markers first
+        airline_clean = re.sub(r"[*†‡§]+$", "", airline_raw).strip()
+        airline_code = AIRLINE_MAP.get(airline_clean.lower())
         if airline_code is None:
             logger.debug("Skipping non-airline destination %r", airline_raw)
             continue
 
-        # Bonus pct — "25% transfer bonus…" → 25
-        pct_m = re.search(r"(\d+)%", details_raw)
-        if not pct_m:
-            logger.warning("No bonus pct in details %r — skipping row", details_raw[:80])
-            continue
-        bonus_pct = int(pct_m.group(1))
-
-        # Dates — cells contain an Excel serial prefix followed by MM/DD/YY,
-        # e.g. "4617406/02/26". Extract the human-readable suffix.
-        start_m = re.search(r"(\d{1,2}/\d{2}/\d{2})$", start_date_raw)
+        # Bonus pct — "25%" → 25
         try:
-            starts_at = (
-                datetime.strptime(start_m.group(1), "%m/%d/%y").date()
-                if start_m else today
-            )
+            bonus_pct = int(bonus_raw.strip().rstrip("%"))
         except ValueError:
-            logger.warning("Unexpected start_date %r — using today", start_date_raw)
-            starts_at = today
+            logger.warning("Unexpected bonus_rate %r — skipping row", bonus_raw)
+            continue
 
-        end_m = re.search(r"(\d{1,2}/\d{2}/\d{2})$", end_date_raw)
+        # End date — "6/30/26" → date(2026, 6, 30)
         try:
-            ends_at = (
-                datetime.strptime(end_m.group(1), "%m/%d/%y").date()
-                if end_m else None
-            )
+            ends_at = datetime.strptime(end_date_raw.strip(), "%m/%d/%y").date()
         except ValueError:
             logger.warning("Unexpected end_date %r — skipping row", end_date_raw)
             continue
-        if ends_at is None:
-            logger.warning("Missing end_date in %r — skipping row", end_date_raw)
-            continue
+
+        # Store original cell text in notes if it was altered (e.g. trailing *)
+        notes: str | None = airline_raw if airline_raw != airline_clean else None
 
         records.append({
             "bank_program_id": bank_id,
             "airline_code": airline_code,
             "bonus_pct": bonus_pct,
-            "starts_at": starts_at,
+            "starts_at": today,
             "ends_at": ends_at,
-            "notes": None,
+            "notes": notes,
         })
 
     return records
@@ -254,16 +234,66 @@ def reconcile(
     return deleted, inserted
 
 
-def fetch_page(url: str = SOURCE_URL, timeout: int = 15) -> str:
-    """Fetch the bonuses page. Raises httpx.HTTPStatusError on non-2xx."""
-    resp = httpx.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; PointPilot/1.0)"},
-        timeout=timeout,
-        follow_redirects=True,
+def _find_chrome() -> str:
+    """Return path to Chrome/Chromium binary, searching common locations."""
+    import shutil
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",  # macOS
+        "/usr/bin/google-chrome-stable",  # GHA ubuntu-latest after setup-chrome
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise RuntimeError(
+        "Chrome/Chromium not found. Install Google Chrome or set up browser-actions/setup-chrome."
     )
-    resp.raise_for_status()
-    return resp.text
+
+
+async def _fetch_with_nodriver(url: str, wait_secs: int = 5) -> str:
+    """Fetch *url* using a headless Chrome CDP session (WAF bypass).
+
+    Launches Chrome on a fixed debug port, connects via nodriver (pure CDP —
+    no WebDriver protocol, so navigator.webdriver is genuinely absent), waits
+    for JS rendering, then returns the page HTML.
+    """
+    port = 9222
+    chrome_bin = _find_chrome()
+    proc = subprocess.Popen(
+        [
+            chrome_bin,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-host=127.0.0.1",
+            "--user-data-dir=/tmp/tb-scrape-profile",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(3)  # wait for Chrome to bind the debug port
+    try:
+        browser = await uc.start(host="127.0.0.1", port=port)
+        page = await browser.get(url)
+        await asyncio.sleep(wait_secs)  # allow JS/redirect to settle
+        html = await page.get_content()
+        browser.stop()  # sync method — no await
+        return html
+    finally:
+        proc.terminate()
+
+
+def fetch_page(url: str = SOURCE_URL) -> str:
+    """Fetch the bonuses page via headless Chrome (nodriver) to bypass WAF."""
+    return asyncio.run(_fetch_with_nodriver(url))
 
 
 def connect() -> duckdb.DuckDBPyConnection:

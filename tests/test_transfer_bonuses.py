@@ -1,8 +1,8 @@
 """Unit tests for transfer_bonuses.py — no network, no MotherDuck required.
 
 parse_bonuses: pure HTML → list[dict], tested with a minimal fixture that mirrors
-the frequentmiler.com table structure (4 cols: Transfer From, Transfer Bonus Details,
-Start Date, End Date).
+the travel-on-points.com table structure (4 cols: Point Program, Bonus Rate,
+Airline / Hotel Program, End Date).
 
 reconcile: snapshot-replace logic, tested with an in-memory DuckDB.
 """
@@ -17,46 +17,44 @@ import pytest
 from transfer_bonuses import parse_bonuses, reconcile
 
 # ---------------------------------------------------------------------------
-# Minimal HTML fixture — mirrors the frequentmiler.com table structure.
+# Minimal HTML fixture — mirrors the travel-on-points.com table structure.
 # Contains:
-#   - one valid airline bonus (Amex → Air France)
-#   - one with a different bank label variant (Citi ThankYou Rewards → Qatar)
-#   - one hotel destination to skip (Chase → Marriott Bonvoy)
-#   - one hotel-only destination to skip (Citi → Preferred Hotels)
-#   - one unknown bank to skip (Rove Miles → Air Canada)
-# Dates use the real page format: Excel serial prefix + MM/DD/YY.
+#   - one valid airline bonus (American Express → Air France)
+#   - one with a trailing asterisk in the airline cell (Chase → JetBlue*)
+#   - one hotel destination to skip (Capital One → Marriott Bonvoy)
+#   - one unknown bank to skip (Rove Miles → Air Canada Aeroplan)
+# Dates use the real page format: "M/D/YY"
 # ---------------------------------------------------------------------------
 HTML_FIXTURE = """\
 <html><body>
 <table>
 <tr>
-  <td>Transfer From</td><td>Transfer Bonus Details</td>
-  <td>Start Date</td><td>End Date</td>
+  <td>Point Program</td><td>Bonus Rate</td>
+  <td>Airline / Hotel Program</td><td>End Date</td>
 </tr>
 <tr>
-  <td>Amex Membership Rewards</td>
-  <td>25% transfer bonus from Amex Membership Rewards to Air France KLM Flying Blue</td>
-  <td>4617406/02/26</td><td>4620306/30/26</td>
+  <td>American Express</td>
+  <td>25%</td>
+  <td>Air France/KLM Flying Blue</td>
+  <td>6/30/26</td>
 </tr>
 <tr>
-  <td>Citi ThankYou Rewards</td>
-  <td>30% transfer bonus from Citi ThankYou Rewards to Qatar Privilege Club Avios</td>
-  <td>4617406/01/26</td><td>4620306/30/26</td>
+  <td>Chase</td>
+  <td>30%</td>
+  <td>JetBlue TrueBlue*</td>
+  <td>7/15/26</td>
 </tr>
 <tr>
-  <td>Chase Ultimate Rewards</td>
-  <td>55% transfer bonus from Chase Ultimate Rewards to Marriott Bonvoy</td>
-  <td>4615805/16/26</td><td>4620306/30/26</td>
-</tr>
-<tr>
-  <td>Citi ThankYou Rewards</td>
-  <td>30% transfer bonus from Citi ThankYou Rewards to Preferred Hotels &amp; Resorts I Prefer</td>
-  <td>4615905/17/26</td><td>4618606/13/26</td>
+  <td>Capital One</td>
+  <td>55%</td>
+  <td>Marriott Bonvoy</td>
+  <td>6/30/26</td>
 </tr>
 <tr>
   <td>Rove Miles</td>
-  <td>25% transfer bonus from Rove Miles to Air Canada Aeroplan</td>
-  <td>4614905/07/26</td><td>4617906/06/26</td>
+  <td>25%</td>
+  <td>Air Canada Aeroplan</td>
+  <td>6/6/26</td>
 </tr>
 </table>
 </body></html>
@@ -70,48 +68,48 @@ TODAY = date(2026, 6, 6)
 # ---------------------------------------------------------------------------
 
 def test_parse_valid_bonus():
-    """Amex Membership Rewards → Air France: pct, dates, and notes parsed correctly."""
+    """American Express → Air France: pct, dates, and notes parsed correctly."""
     records = parse_bonuses(HTML_FIXTURE, today=TODAY)
     amex_af = next((r for r in records if r["airline_code"] == "AF"), None)
     assert amex_af is not None
-    assert amex_af["bank_program_id"] == 2       # Amex Membership Rewards
+    assert amex_af["bank_program_id"] == 2       # American Express
     assert amex_af["bonus_pct"] == 25
-    assert amex_af["starts_at"] == date(2026, 6, 2)   # real date from page, not TODAY
+    assert amex_af["starts_at"] == TODAY          # starts_at always = today on this site
     assert amex_af["ends_at"] == date(2026, 6, 30)
     assert amex_af["notes"] is None
 
 
-def test_parse_date_prefix_stripped():
-    """Excel serial prefix in date cells (e.g. '4617406/02/26') is stripped correctly."""
+def test_parse_asterisk_stripped_into_notes():
+    """Trailing asterisk in airline cell is stripped for lookup; raw text stored in notes."""
     records = parse_bonuses(HTML_FIXTURE, today=TODAY)
-    # Citi → QR has start '4617406/01/26' → 2026-06-01, end '4620306/30/26' → 2026-06-30
-    qatar = next((r for r in records if r["airline_code"] == "QR"), None)
-    assert qatar is not None
-    assert qatar["bank_program_id"] == 4         # Citi ThankYou Rewards
-    assert qatar["bonus_pct"] == 30
-    assert qatar["starts_at"] == date(2026, 6, 1)
-    assert qatar["ends_at"] == date(2026, 6, 30)
+    jetblue = next((r for r in records if r["airline_code"] == "B6"), None)
+    assert jetblue is not None
+    assert jetblue["bank_program_id"] == 1        # Chase
+    assert jetblue["bonus_pct"] == 30
+    assert jetblue["ends_at"] == date(2026, 7, 15)
+    # Raw cell "JetBlue TrueBlue*" stored in notes because it was altered
+    assert jetblue["notes"] == "JetBlue TrueBlue*"
 
 
 def test_parse_hotel_destination_skipped():
-    """'Marriott Bonvoy' and 'Preferred Hotels' as destinations → skipped."""
+    """'Marriott Bonvoy' as a destination → skipped; only AF and B6 survive."""
     records = parse_bonuses(HTML_FIXTURE, today=TODAY)
-    # Only AF and QR survive from this fixture
     assert len(records) == 2
     codes = {r["airline_code"] for r in records}
-    assert codes == {"AF", "QR"}
+    assert codes == {"AF", "B6"}
 
 
 def test_parse_unknown_bank_skipped():
-    """'Rove Miles' is not in BANK_MAP → its row is silently skipped (isolated fixture)."""
+    """'Rove Miles' is not in BANK_MAP → its row is silently skipped."""
     html = """\
 <html><body>
 <table>
-<tr><td>Transfer From</td><td>Transfer Bonus Details</td><td>Start Date</td><td>End Date</td></tr>
+<tr><td>Point Program</td><td>Bonus Rate</td><td>Airline / Hotel Program</td><td>End Date</td></tr>
 <tr>
   <td>Rove Miles</td>
-  <td>25% transfer bonus from Rove Miles to Air Canada Aeroplan</td>
-  <td>4614905/07/26</td><td>4617906/06/26</td>
+  <td>25%</td>
+  <td>Air Canada Aeroplan</td>
+  <td>6/6/26</td>
 </tr>
 </table>
 </body></html>
@@ -177,7 +175,7 @@ def test_reconcile_replaces_existing(mem_conn):
         "bank_program_id": 2,       # Amex
         "airline_code": "AF",
         "bonus_pct": 25,
-        "starts_at": date(2026, 6, 2),
+        "starts_at": date(2026, 6, 6),
         "ends_at": date(2026, 6, 30),
         "notes": None,
     }]
@@ -212,7 +210,7 @@ def test_reconcile_dry_run_leaves_table_unchanged(mem_conn):
     )
     fresh = [{
         "bank_program_id": 2, "airline_code": "AF", "bonus_pct": 25,
-        "starts_at": date(2026, 6, 2), "ends_at": date(2026, 6, 30), "notes": None,
+        "starts_at": date(2026, 6, 6), "ends_at": date(2026, 6, 30), "notes": None,
     }]
     deleted, inserted = reconcile(mem_conn, fresh, dry_run=True)
     assert (deleted, inserted) == (0, 0)

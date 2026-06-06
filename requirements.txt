@@ -1,6 +1,6 @@
 # Pinned to match the scraper/api services so the bundled MotherDuck extension
 # resolves identically across repos.
 duckdb==1.5.2
-httpx>=0.27,<1
+nodriver>=0.35
 beautifulsoup4>=4.12,<5
 pytest>=8,<9

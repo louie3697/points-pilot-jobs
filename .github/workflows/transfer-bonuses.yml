@@ -1,6 +1,6 @@
 name: transfer-bonuses
 
-# Scrape frequentmiler.com for current transfer bonuses and snapshot-replace
+# Scrape travel-on-points.com for current transfer bonuses and snapshot-replace
 # the transfer_bonuses table in MotherDuck. Runs twice monthly; can also be
 # triggered manually (with optional dry-run mode).
 on:
@@ -26,13 +26,17 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+      # nodriver drives Chrome via CDP — install a real Chrome binary.
+      - uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
       - run: pip install -r requirements.txt
       - name: Scrape and reconcile transfer bonuses
         env:
