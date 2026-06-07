@@ -21,8 +21,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
+import urllib.request
 import uuid
 from datetime import date
 from pathlib import Path
@@ -265,16 +269,70 @@ async def approach_c_in_page_fetch(tab) -> dict:
     return {"status": payload.get("status"), "text": payload.get("text") or ""}
 
 
-async def _run(args) -> None:
-    import nodriver as uc
+async def _launch_connected_browser(headless: bool):
+    """Launch Chrome ourselves, wait for its CDP port, then connect nodriver to it.
 
+    Works around nodriver's short self-spawn wait (~0.25s + 5×0.5s ≈ 2.75s in 0.50.3), which
+    loses the race with Chrome's cold start when Chrome is spawned via asyncio in some
+    environments (measured ~4s here, and likely on CI under xvfb). We spawn Chrome ourselves,
+    poll /json/version until it actually serves, then call uc.start(host, port) — passing both
+    host and port makes nodriver connect to the *existing* instance instead of spawning (and
+    racing) its own. Returns (browser, chrome_process, profile_dir) for teardown.
+    """
+    import nodriver as uc
+    from nodriver.core.config import find_chrome_executable
+    from nodriver.core.util import free_port
+
+    port = free_port()
+    profile = tempfile.mkdtemp(prefix="delta_probe_")
+    # --remote-allow-origins=* is REQUIRED: modern Chrome rejects the CDP websocket upgrade
+    # from a non-browser client without it. The rest mirror nodriver's own default flags.
+    flags = [
+        "--remote-allow-origins=*",
+        "--remote-debugging-host=127.0.0.1",
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-service-autorun",
+        "--homepage=about:blank",
+        "--no-pings",
+        "--password-store=basic",
+        "--disable-breakpad",
+        "--disable-dev-shm-usage",
+        "--disable-infobars",
+        "--disable-session-crashed-bubble",
+        "--disable-search-engine-choice-screen",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--no-sandbox",  # required on CI (root); harmless locally
+    ]
+    if headless:
+        flags.append("--headless=new")
+    proc = subprocess.Popen(
+        [find_chrome_executable(), *flags],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+    version_url = f"http://127.0.0.1:{port}/json/version"
+    for _ in range(60):  # up to ~30s for Chrome to open the CDP port
+        try:
+            urllib.request.urlopen(version_url, timeout=1).read()
+            break
+        except Exception:
+            await asyncio.sleep(0.5)
+    else:
+        proc.terminate()
+        raise RuntimeError(f"Chrome did not open CDP port {port} within 30s")
+    browser = await uc.start(host="127.0.0.1", port=port)
+    return browser, proc, profile
+
+
+async def _run(args) -> None:
     captures_dir = Path(__file__).resolve().parent / "captures"
     captures_dir.mkdir(exist_ok=True)
 
-    browser = await uc.start(
-        headless=False,  # headful (under xvfb on CI) — Akamai scores headless harshly
-        browser_args=["--no-sandbox", "--disable-dev-shm-usage"],
-    )
+    browser, chrome_proc, profile = await _launch_connected_browser(args.headless)
     rows: list[tuple] = []
     try:
         tab = await warm_session(browser)
@@ -299,7 +357,16 @@ async def _run(args) -> None:
                     nrec = str(len(validate(data)))
             rows.append((name, label, res.get("status"), res.get("error", ""), nrec))
     finally:
-        browser.stop()
+        try:
+            browser.stop()
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
+        chrome_proc.terminate()
+        try:
+            chrome_proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            chrome_proc.kill()
+        shutil.rmtree(profile, ignore_errors=True)
 
     print(f"\n=== Delta nodriver probe — env={args.env} {ORIGIN}->{DEST} {TRAVEL_DATE} ===")
     print(f"{'approach':<20}{'status':<10}{'http':<8}{'#records':<10}error")
@@ -315,6 +382,12 @@ def main() -> None:
         help="Skip DeltaScraper validation (used for the datacenter/jobs run)",
     )
     ap.add_argument("--env", default="residential", help="Label for output filenames/summary")
+    ap.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome headless (default: headful — Akamai scores headless harshly; on CI "
+        "run headful under xvfb instead)",
+    )
     args = ap.parse_args()
     asyncio.run(_run(args))
 
