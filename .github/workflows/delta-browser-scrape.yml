@@ -20,7 +20,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75   # the ~60-min scrape needs headroom so the post-loop metric + heartbeat fire
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
