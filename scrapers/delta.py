@@ -25,7 +25,9 @@ import logging
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
+from config.airport_tz import AIRPORT_TZ
 from config.settings import TTL_HOURS, PriorityTier
 from scrapers.base import FlightRecord
 from scrapers.browser import BrowserScraper
@@ -66,13 +68,22 @@ def _brand_to_cabin(brand_id: object) -> str | None:
     return None
 
 
-def _parse_iso(s: object) -> datetime | None:
-    """Parse an ISO 8601 string to a datetime (naive local time). Returns None on failure."""
+def _parse_iso(s: object, iata: str) -> datetime | None:
+    """Parse Delta's *LocalTs (local airport time) as the wall-clock time at airport `iata`,
+    returning a timezone-AWARE datetime. Returns None on failure or unknown airport.
+
+    Delta reports naive local airport times. We attach the airport's IANA timezone so the
+    stored value is a correct UTC instant — otherwise a naive value lands in the TIMESTAMPTZ
+    column as UTC, shifting every departure by the airport's offset (e.g. 4h at ATL).
+    """
     if not isinstance(s, str) or not s:
         return None
+    tz = AIRPORT_TZ.get(iata.upper())
+    if tz is None:
+        logger.warning("[DL] no timezone for %s — dropping time %r", iata, s)
+        return None
     try:
-        # Delta's *LocalTs are local airport times — keep them naive (do NOT shift to UTC).
-        return datetime.fromisoformat(s.replace("Z", ""))
+        return datetime.fromisoformat(s.replace("Z", "")).replace(tzinfo=ZoneInfo(tz))
     except ValueError:
         return None
 
@@ -206,8 +217,8 @@ class DeltaScraper(BrowserScraper):
         if not isinstance(stops, int):
             stops = max(0, len(legs) - 1)
 
-        dep_time = _parse_iso(trip.get("scheduledDepartureLocalTs"))
-        arr_time = _parse_iso(trip.get("scheduledArrivalLocalTs"))
+        dep_time = _parse_iso(trip.get("scheduledDepartureLocalTs"), origin)
+        arr_time = _parse_iso(trip.get("scheduledArrivalLocalTs"), dest)
         duration_mins = _dhm_to_minutes(trip.get("totalTripTime"))
         if duration_mins is None and dep_time and arr_time:
             delta = int((arr_time - dep_time).total_seconds() / 60)

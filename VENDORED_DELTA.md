@@ -4,8 +4,13 @@
 scrape **self-contained** (GH Actions Azure IP clears Akamai where Fly's IP gets HTTP 444), with
 no cross-repo checkout / PAT.
 
-Files: `scrapers/{base,browser,delta}.py`, `config/settings.py`, `db/{connection,queries,schema}.py`,
-`pipeline/normalizer.py`, `pipeline/obs.py`. Entry point: `delta_browser_scrape.py`.
+Files: `scrapers/{base,browser,delta}.py`, `config/{settings,airport_tz}.py`,
+`db/{connection,queries,schema}.py`, `pipeline/normalizer.py`, `pipeline/obs.py`.
+Entry point: `delta_browser_scrape.py`.
+
+`config/airport_tz.py` (copy of the scraper repo's) maps airport → IANA tz so `delta.py`
+stores tz-aware local departure/arrival times (a naive value would land in the TIMESTAMPTZ
+column as UTC, shifting every time by the airport's offset). Re-sync if it changes upstream.
 
 `pipeline/obs.py` is a copy of the scraper repo's (canonical there) — it gives the Delta run
 Better Stack log shipping + a `scrape_run` metric (service `point-pilot-delta`) at parity with the
