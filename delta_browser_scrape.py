@@ -14,7 +14,11 @@ Suitable for a manual workflow_dispatch or a cron. Tunable via env: DELTA_SCRAPE
 import logging
 import os
 import sys
-from datetime import date, timedelta
+import time
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+
+DELTA_HEARTBEAT_URL = os.getenv("DELTA_HEARTBEAT_URL", "")  # optional GH-Actions run heartbeat
 
 
 class _SuppressHashlibWarnings(logging.Filter):
@@ -48,6 +52,39 @@ DELTA_ROUTES: list[tuple[str, str]] = [
 SCRAPE_DAYS = int(os.getenv("DELTA_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
 
+def _ping_heartbeat() -> None:
+    """Ping the Better Stack heartbeat so a missed daily Delta run raises an alert.
+    No-op unless DELTA_HEARTBEAT_URL is set."""
+    if not DELTA_HEARTBEAT_URL:
+        return
+    try:
+        urllib.request.urlopen(DELTA_HEARTBEAT_URL, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001 — monitoring must never break the run
+        logger.warning("heartbeat ping failed: %s", exc)
+
+
+def _delta_freshness() -> dict:
+    """Snapshot how many / how fresh the Delta flight rows are (parity with the award
+    scraper's _data_freshness). Best-effort — never breaks a run."""
+    try:
+        from db.connection import get_connection
+
+        total, newest = (
+            get_connection()
+            .execute("SELECT count(*), max(scraped_at_utc) FROM flights WHERE source = 'delta'")
+            .fetchone()
+        )
+        age_h = None
+        if newest is not None:
+            if newest.tzinfo is None:
+                newest = newest.replace(tzinfo=timezone.utc)
+            age_h = round((datetime.now(timezone.utc) - newest).total_seconds() / 3600, 1)
+        return {"delta_rows": int(total or 0), "delta_newest_age_h": age_h}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("freshness snapshot failed: %s", exc)
+        return {}
+
+
 def main() -> None:
     try:
         from config.settings import PriorityTier  # noqa: F401 — also triggers env validation
@@ -59,9 +96,11 @@ def main() -> None:
     from db.queries import upsert_flights
     from db.schema import migrate
     from pipeline.normalizer import filter_valid, stamp_expiry
+    from pipeline.obs import install_log_shipping, ship_metric
     from scrapers.base import ScraperBlockedError
     from scrapers.delta import DeltaScraper
 
+    install_log_shipping("point-pilot-delta")  # ship WARNING+ logs to Better Stack
     migrate()  # idempotent; ensures the flights table exists
     logger.info("Schema ready")
 
@@ -75,7 +114,10 @@ def main() -> None:
     )
 
     scraper = DeltaScraper()
+    started = time.monotonic()
     total = 0
+    error_count = 0
+    routes_scraped = 0
     blocked = False
     try:
         for origin, dest in pairs:
@@ -91,17 +133,39 @@ def main() -> None:
                     break
                 except Exception as exc:  # noqa: BLE001 — one route/date must not sink the run
                     logger.error("Error scraping %s→%s %s: %s", origin, dest, travel, exc)
+                    error_count += 1
                     continue
                 stamped = stamp_expiry(filter_valid(recs), PriorityTier.MED)
                 if stamped:
                     upsert_flights(stamped)
                     route_recs += len(stamped)
                     total += len(stamped)
+            routes_scraped += 1
             logger.info("%s→%s: %d records", origin, dest, route_recs)
     finally:
         scraper.close()
         close_connection()
-    logger.info("=== done — %d Delta records upserted (blocked=%s) ===", total, blocked)
+
+    duration_s = round(time.monotonic() - started, 1)
+    ship_metric(
+        {
+            "event": "scrape_run",
+            "service": "point-pilot-delta",
+            "airline": "DL",
+            "due_routes": len(pairs),
+            "routes_scraped": routes_scraped,
+            "records": total,
+            "errors": error_count,
+            "duration_s": duration_s,
+            "blocked": blocked,
+            **_delta_freshness(),
+        }
+    )
+    _ping_heartbeat()
+    logger.info(
+        "=== done — %d Delta records upserted (routes=%d errors=%d blocked=%s) in %ss ===",
+        total, routes_scraped, error_count, blocked, duration_s,
+    )
 
 
 if __name__ == "__main__":

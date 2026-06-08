@@ -5,7 +5,11 @@ scrape **self-contained** (GH Actions Azure IP clears Akamai where Fly's IP gets
 no cross-repo checkout / PAT.
 
 Files: `scrapers/{base,browser,delta}.py`, `config/settings.py`, `db/{connection,queries,schema}.py`,
-`pipeline/normalizer.py`. Entry point: `delta_browser_scrape.py`.
+`pipeline/normalizer.py`, `pipeline/obs.py`. Entry point: `delta_browser_scrape.py`.
+
+`pipeline/obs.py` is a copy of the scraper repo's (canonical there) — it gives the Delta run
+Better Stack log shipping + a `scrape_run` metric (service `point-pilot-delta`) at parity with the
+Alaska/JetBlue + Google Flights scrapers. Re-sync if it changes upstream.
 
 **`scrapers/browser.py` + `scrapers/delta.py` are CANONICAL HERE** — the Delta browser scraper
 was moved out of points-pilot-scrapers into this repo (the scraper repo no longer carries Delta).
