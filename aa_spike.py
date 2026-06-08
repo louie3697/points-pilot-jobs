@@ -73,6 +73,36 @@ async def _raw_fetch(tab, body: dict) -> dict:
         return {"status": None, "text": ""}
 
 
+async def _mint_via_form(tab, search_json: dict) -> str:
+    """Submit a REAL top-level form POST to /booking/find-flights — the search submission that
+    mints a `sid` + server-side session (what clicking Search does). Returns the page URL after
+    the POST→redirect settles (a `choose-flights?sid=…` URL means a session was minted)."""
+    js = (
+        "(() => {"
+        "  const f = document.createElement('form');"
+        "  f.method = 'POST';"
+        "  f.action = '/booking/find-flights';"
+        "  const add = (n, v) => { const i = document.createElement('input');"
+        "    i.type = 'hidden'; i.name = n; i.value = v; f.appendChild(i); };"
+        f"  add('searchRequest', {json.dumps(json.dumps(search_json))});"
+        "  add('requestType', 'itinerary');"
+        "  document.body.appendChild(f);"
+        "  f.submit();"
+        "  return 'submitted';"
+        "})()"
+    )
+    try:
+        await tab.evaluate(js)
+    except Exception:  # noqa: BLE001 — the form.submit() navigation can interrupt evaluate
+        pass
+    await tab.sleep(12)  # let POST → 302 → choose-flights?sid= settle
+    try:
+        url = await tab.evaluate("location.href")
+    except Exception:  # noqa: BLE001
+        url = "?"
+    return url if isinstance(url, str) else "?"
+
+
 async def _run() -> None:
     from scrapers.american import AmericanScraper, _build_search_request
     from scrapers.browser import BrowserScraper
@@ -102,12 +132,16 @@ async def _run() -> None:
         chosen = a
 
         if cls_a in ("EMPTY_309", "EMPTY", "BLOCKED"):
-            logger.info("Attempt A not DATA — navigating booking search to mint a session...")
-            await tab.get(_BOOKING_URL)
-            await tab.sleep(8)
+            logger.info("Attempt A not DATA — minting a session via the search-form POST...")
+            minted_url = await _mint_via_form(tab, body)
+            logger.info("After mint, page URL: %.200s", minted_url)
+            await tab.sleep(3)
             b = await _raw_fetch(tab, body)
             cls_b = _classify(b.get("status"), b.get("text"))
-            logger.info("ATTEMPT B: http=%s class=%s body=%.180s", b.get("status"), cls_b, b.get("text"))
+            logger.info(
+                "ATTEMPT B (after mint): http=%s class=%s body=%.180s",
+                b.get("status"), cls_b, b.get("text"),
+            )
             if cls_b == "DATA":
                 chosen = b
     finally:
