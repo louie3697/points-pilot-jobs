@@ -3,9 +3,9 @@ Delta Air Lines SkyMiles award availability scraper.
 
 Runs on the BrowserScraper (nodriver/Chrome) transport: Delta's GraphQL endpoint is
 Akamai-blocked to plain httpx (HTTP 444), but an in-page fetch() inside a warmed delta.com
-Chrome session clears Akamai from a datacenter IP (proven 2026-06-07). Scheduled by the
-dedicated point-pilot-browser-scraper Fly app (see config/routes.py + pipeline.scheduler
-.start_browser).
+Chrome session clears Akamai from a GitHub Actions (Azure) datacenter IP (proven 2026-06-07).
+Run by `delta_browser_scrape.py` on a daily GitHub Actions cron in this (points-pilot-jobs) repo
+(`delta-browser-scrape.yml`). Canonical home for the Delta browser scraper.
 
 Uses Delta's public GraphQL offer endpoint (``offer-api-prd.delta.com``) — no login, the
 ``authorization: GUEST`` header is the anonymous token the dotcom search uses. The request
