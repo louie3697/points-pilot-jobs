@@ -52,6 +52,48 @@ DELTA_ROUTES: list[tuple[str, str]] = [
 SCRAPE_DAYS = int(os.getenv("DELTA_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
 
+def _parse_dates_csv(csv: str) -> list[date]:
+    """Parse a comma-separated list of ISO YYYY-MM-DD dates, dropping blanks/invalid ones."""
+    out: list[date] = []
+    for tok in csv.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            out.append(date.fromisoformat(tok))
+        except ValueError:
+            logger.warning("ignoring invalid date %r in DELTA_ROUTE_DATES", tok)
+    return out
+
+
+def _build_plan(
+    route_origin: str,
+    route_dest: str,
+    route_dates_csv: str,
+    scrape_days: int,
+    today: date,
+) -> tuple[list[tuple[str, str]], list[date]]:
+    """Return (pairs, dates) for this run.
+
+    Single-route mode (origin AND dest provided): just that route in the requested
+    direction, over the supplied dates (or the near-term window if none given).
+    Cron mode (no route): every popular route in both directions over the window.
+    """
+    if route_origin and route_dest:
+        pairs = [(route_origin.upper(), route_dest.upper())]
+        dates = _parse_dates_csv(route_dates_csv)
+        if not dates:
+            dates = [today + timedelta(days=i) for i in range(scrape_days)]
+        return pairs, dates
+
+    pairs = []
+    for origin, dest in DELTA_ROUTES:
+        pairs.append((origin, dest))
+        pairs.append((dest, origin))
+    dates = [today + timedelta(days=i) for i in range(scrape_days)]
+    return pairs, dates
+
+
 def _ping_heartbeat() -> None:
     """Ping the Better Stack heartbeat so a missed daily Delta run raises an alert.
     No-op unless DELTA_HEARTBEAT_URL is set."""
