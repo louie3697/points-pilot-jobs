@@ -8,9 +8,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["UP017", "UP037"]
 
-# The manual research probes embed long JS-regex string literals (can't be
-# line-wrapped) and inline percent-format — scope those off rather than mangling
-# the embedded JS.
+# The gflights research probe embeds a long JS-regex string literal (can't be
+# line-wrapped) — scope E501 off it rather than mangling the embedded JS.
 [lint.per-file-ignores]
-"american_mint_probe.py" = ["E501", "UP031"]
 "gflights_probe.py" = ["E501"]

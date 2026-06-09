@@ -12,8 +12,8 @@ database (`md:point_pilot`).
 | `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `transfer_bonuses` table. |
 | `delta_browser_scrape.py` | `delta-browser-scrape.yml` | daily 08:00 UTC + on-demand dispatch | `nodriver` browser scrape of Delta award space (Azure runner IP clears Akamai) → `flights`. |
 
-Plus two **manual-only** probe workflows (`workflow_dispatch`): `american-mint-probe.yml`
-and `gflights-probe.yml` (research tools, no schedule). `obs.py` is the shared Better Stack
+Plus a **manual-only** probe workflow (`workflow_dispatch`): `gflights-probe.yml` (research
+tool, no schedule). `obs.py` is the shared Better Stack
 shipper used by the cleanup + transfer jobs (Delta uses the vendored `pipeline/obs.py`);
 `conftest.py` holds shared pytest fixtures.
 
