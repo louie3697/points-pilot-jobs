@@ -103,3 +103,89 @@ def _cheapest_available(fare_products: object) -> tuple[str, dict] | None:
             best = (family, fp)
             best_pts = pts
     return best
+
+
+class SouthwestScraper(BrowserScraper):
+    """Scraper for Southwest Rapid Rewards award availability.
+
+    No authentication (anonymous guest search). The browser transport (warm session, pacing,
+    in-page fetch, block handling) is inherited from BrowserScraper; this class only builds the
+    request and maps the response to FlightRecords.
+
+    Usage:
+        scraper = SouthwestScraper()
+        records = scraper.scrape("SEA", "LAX", date(2026, 6, 22))
+    """
+
+    airline_code = "WN"
+    program_name = "Rapid Rewards"
+    source = "southwest"
+
+    headless = False  # headful under xvfb on CI — Shape/Akamai score headless harshly
+
+    # Conservative cadence (mirrors Delta). Only min_delay_s / block_threshold affect the cron
+    # runner; the other tier attrs are inert unless Southwest is later added to the scheduler.
+    min_delay_s = 12.0
+    block_threshold = 4
+    refresh_interval_min = 360
+    scrape_days_ahead = 21
+    dense_days = 10
+    sparse_step = 4
+    max_routes_per_run = 12
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Warm a REAL booking page (proven to arm Shape's fetch hook; the homepage was not
+        # validated). The date is dynamic so it stays bookable; this warm search is ignored —
+        # we only need Shape armed before our own in-page fetch().
+        warm_date = (date.today() + timedelta(days=30)).strftime("%Y-%m-%d")
+        self.warm_url = (
+            "https://www.southwest.com/air/booking/select-depart.html"
+            "?adultPassengersCount=1&adultsCount=1"
+            f"&departureDate={warm_date}&departureTimeOfDay=ALL_DAY"
+            "&destinationAirportCode=LAX&fareType=POINTS&int=HOMEQBOMAIR"
+            "&originationAirportCode=SEA&passengerType=ADULT"
+            "&returnDate=&returnTimeOfDay=ALL_DAY&to=LAX&tripType=oneway"
+        )
+
+    async def fetch_raw(self, origin: str, dest: str, travel_date: date) -> dict:
+        """Build the flat shopping request and run it as an in-page fetch() in the warmed Chrome
+        session. Returns the parsed JSON dict ({} on a benign/empty/blocked-soft body).
+        ScraperBlockedError is raised by _page_fetch after repeated Shape/Akamai blocks."""
+        body = _build_request_body(origin, dest, travel_date)
+        # `accept` + `content-type` are injected by BrowserScraper._page_fetch; the Apigee
+        # gateway headers go here. The Shape ee30zvqlwf-* sensor is added by Southwest's own JS.
+        headers = {
+            "x-api-key": _API_KEY,
+            "x-app-id": "air-booking",
+            "x-channel-id": "southwest",
+            "x-user-experience-id": "0f836f7f-ddea-465c-b25c-6c4c79463507",
+        }
+        return await self._page_fetch(_SHOP_URL, body, headers)
+
+    def normalize(self, raw: dict, origin: str, dest: str, travel_date: date) -> list[FlightRecord]:
+        """Placeholder — implemented in Task 5."""
+        return []
+
+
+def _build_request_body(origin: str, dest: str, travel_date: date) -> dict:
+    """Build the flat JSON body for a one-way POINTS search, one adult."""
+    o, d = origin.upper(), dest.upper()
+    return {
+        "adultPassengersCount": "1",
+        "adultsCount": "1",
+        "departureDate": travel_date.strftime("%Y-%m-%d"),
+        "departureTimeOfDay": "ALL_DAY",
+        "destinationAirportCode": d,
+        "fareType": "POINTS",
+        "int": "HOMEQBOMAIR",
+        "originationAirportCode": o,
+        "passengerType": "ADULT",
+        "promoCode": "",
+        "returnDate": "",
+        "returnTimeOfDay": "ALL_DAY",
+        "to": d,
+        "tripType": "oneway",
+        "application": "air-booking",
+        "site": "southwest",
+    }
