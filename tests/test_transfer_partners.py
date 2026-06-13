@@ -183,6 +183,43 @@ def test_parse_no_managed_tables_raises():
         parse_partners("<html><body><p>nothing here</p></body></html>")
 
 
+def test_parse_tableless_section_does_not_steal_next_table():
+    """A managed bank heading with no table of its own must NOT grab the next
+    section's table and misattribute its rows (section-bounded _find_bank_table)."""
+    html = """\
+<html><body>
+<h2>Citi Transfer Partners</h2>
+<h2>Bilt Transfer Partners</h2>
+<table>
+<tr><th>Program</th><th>Type</th><th>Transfer Ratio</th><th>Transfer Time</th></tr>
+<tr><td>Alaska Airlines Mileage Plan</td><td>Airline</td><td>1:1</td><td>Instant</td></tr>
+</table>
+</body></html>
+"""
+    records, stats = parse_partners(html)
+    keys = {(r["bank_program_id"], r["airline_code"]) for r in records}
+    assert keys == {(5, "AS")}  # Bilt→Alaska only; Citi got nothing (no false (4, "AS"))
+    assert stats["banks_found"] == 1
+
+
+def test_parse_section_with_empty_intervening_heading():
+    """An empty/unrelated heading between a bank heading and its table is skipped
+    (the live page has an empty <h2> after 'American Express Transfer Partners')."""
+    html = """\
+<html><body>
+<h2>American Express Transfer Partners</h2>
+<h2></h2>
+<table>
+<tr><th>Program</th><th>Type</th><th>Transfer Ratio</th><th>Transfer Time</th></tr>
+<tr><td>Cathay Pacific Asia Miles</td><td>Airline</td><td>5:4</td><td>Instant</td></tr>
+</table>
+</body></html>
+"""
+    records, _stats = parse_partners(html)
+    keys = {(r["bank_program_id"], r["airline_code"]) for r in records}
+    assert keys == {(2, "CX")}  # Amex→Cathay found despite the empty heading
+
+
 @pytest.fixture()
 def mem_conn():
     """In-memory DuckDB with the transfer_partners schema + a stale Marriott row."""

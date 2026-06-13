@@ -140,14 +140,32 @@ def _parse_ratio(raw: str) -> float | None:
     return ratio
 
 
+_HEADING_RE = re.compile(r"^h[1-4]$")
+
+
 def _find_bank_table(soup: BeautifulSoup, marker: str):
-    """Return the first <table> following a heading whose text contains `marker`
-    (case-insensitive). None if no such heading/table is found."""
-    for heading in soup.find_all(re.compile(r"^h[1-4]$")):
-        if marker in heading.get_text(strip=True).lower():
-            table = heading.find_next("table")
-            if table is not None:
-                return table
+    """Return this bank section's own <table>, or None.
+
+    Walks forward from the heading whose text contains `marker` and returns the
+    first <table> — but STOPS at the next bank-section heading (one whose text
+    contains "transfer partners"), returning None if that boundary is reached
+    first. This prevents a section that renders without its own table from
+    silently stealing the *next* section's table and misattributing its rows to
+    the wrong bank. Empty/unrelated headings (the page has an empty <h2> after the
+    Amex heading, plus "How to Earn …" subheadings) are skipped — only the
+    "* Transfer Partners" headings delimit sections.
+    """
+    for heading in soup.find_all(_HEADING_RE):
+        if marker not in heading.get_text(strip=True).lower():
+            continue
+        for el in heading.find_all_next():
+            if el.name == "table":
+                return el
+            if el.name and _HEADING_RE.fullmatch(el.name) and (
+                "transfer partners" in el.get_text(strip=True).lower()
+            ):
+                return None  # next section reached before any table → this one has none
+        return None
     return None
 
 
@@ -353,13 +371,15 @@ async def _wait_for_tables(page, min_tables: int, timeout_s: float) -> int:
     return count
 
 
-async def _fetch_with_nodriver(url: str, min_tables: int = 6, timeout_s: float = 30.0) -> str:
+async def _fetch_with_nodriver(url: str, min_tables: int = 8, timeout_s: float = 30.0) -> str:
     """Fetch *url* using a headless Chrome CDP session (WAF bypass).
 
     Waits for the page's tables to finish rendering (condition-based, see
     `_wait_for_tables`) rather than sleeping a fixed interval. `min_tables` is the
-    floor we expect once rendered (6 managed bank sections; the live page has 8
-    incl. the skipped Rove/Marriott). On timeout it returns whatever rendered —
+    full expected table count once rendered — 8: the 6 managed bank sections plus
+    the 2 skipped ones (Rove, Marriott). Waiting for the full set (not just the 6
+    managed) guarantees every managed section has rendered before we scrape,
+    regardless of DOM/hydration order. On timeout it returns whatever rendered —
     parse_partners then fail-closes if no managed table is present.
     """
     port = 9222
