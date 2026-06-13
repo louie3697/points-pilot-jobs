@@ -54,7 +54,8 @@ def _parse_segments(product_id: object) -> list[dict]:
     """Decode a productId into an ordered list of segment dicts.
 
     Format: '<FAMILY>|<seg>|<seg>...' where each <seg> is a comma list:
-      fareCode, bookingClass, orig, dest, departISO, arriveISO, mktCarrier, opCarrier, flightNum, aircraft
+      fareCode, bookingClass, orig, dest, departISO, arriveISO, mktCarrier, opCarrier,
+      flightNum, aircraft
     Returns [] if the productId is missing or malformed.
     """
     if not isinstance(product_id, str) or "|" not in product_id:

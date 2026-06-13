@@ -1,12 +1,16 @@
+import json
 import os
+from datetime import date, datetime
+from pathlib import Path
 
-# config/settings._require("MOTHERDUCK_TOKEN") runs at import of scrapers.southwest; the parser
-# never connects to the DB, so a dummy value is enough to import.
 os.environ.setdefault("MOTHERDUCK_TOKEN", "test-dummy-token")
 
-from datetime import datetime
-
-from scrapers.southwest import _parse_segments
+from scrapers.southwest import (  # noqa: E402 — env var must be set before this import
+    SouthwestScraper,
+    _build_request_body,
+    _cheapest_available,
+    _parse_segments,
+)
 
 
 def test_parse_segments_nonstop():
@@ -39,12 +43,15 @@ def test_parse_segments_malformed_returns_empty():
     assert _parse_segments(None) == []
 
 
-from scrapers.southwest import _cheapest_available
-
-
 def _fp(status, points):
-    fare = {} if points is None else {"totalFare": {"currencyCode": "POINTS", "value": str(points)},
-                                      "totalTaxesAndFees": {"currencyCode": "USD", "value": "5.60"}}
+    fare = (
+        {}
+        if points is None
+        else {
+            "totalFare": {"currencyCode": "POINTS", "value": str(points)},
+            "totalTaxesAndFees": {"currencyCode": "USD", "value": "5.60"},
+        }
+    )
     return {"availabilityStatus": status, "fare": fare, "productId": "X|a,b,c,d,e,f,WN,WN,1,7S7"}
 
 
@@ -69,13 +76,8 @@ def test_cheapest_available_none_on_empty():
     assert _cheapest_available({}) is None
 
 
-from datetime import date as _date
-
-from scrapers.southwest import SouthwestScraper, _build_request_body
-
-
 def test_build_request_body_shape():
-    body = _build_request_body("sea", "lax", _date(2026, 6, 22))
+    body = _build_request_body("sea", "lax", date(2026, 6, 22))
     assert body["originationAirportCode"] == "SEA"
     assert body["destinationAirportCode"] == "LAX"
     assert body["to"] == "LAX"
@@ -93,9 +95,7 @@ def test_scraper_identity_and_warm_url():
     # warm_url is a real southwest.com booking page so Shape's fetch hook arms.
     assert s.warm_url.startswith("https://www.southwest.com/air/booking/select-depart.html")
     s.close()
-import json
-from datetime import date, datetime
-from pathlib import Path
+
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "southwest_SEA-LAX_2026-06-22.json"
 
@@ -127,7 +127,7 @@ def test_normalize_constants_on_every_row():
 def test_normalize_nonstop_record():
     r = next(r for r in _records() if r.raw_flight_number == "WN 2396")
     assert r.stops == 0
-    assert r.points_cost == 37500          # WGARED unavailable -> prices at PLURED
+    assert r.points_cost == 37500  # WGARED unavailable -> prices at PLURED
     assert r.cash_cost == 5.60
     assert r.fare_class == "H"
     assert r.aircraft_type == "7S7"
@@ -135,7 +135,7 @@ def test_normalize_nonstop_record():
     assert r.layover_duration_minutes is None
     assert r.duration_minutes == 255
     assert r.next_day_arrival is False
-    assert r.is_saver is True               # PLURED -> discounted tier
+    assert r.is_saver is True  # PLURED -> discounted tier
     assert r.departure_time_local == datetime.fromisoformat("2026-06-22T16:55-07:00")
 
 
@@ -143,7 +143,7 @@ def test_normalize_connection_record():
     r = next(r for r in _records() if r.raw_flight_number == "WN 1713+WN 4978")
     assert r.stops == 1
     assert r.layover_airports == "OAK"
-    assert r.layover_duration_minutes == 45   # OAK arr 12:35 -> dep 13:20
+    assert r.layover_duration_minutes == 45  # OAK arr 12:35 -> dep 13:20
     assert r.aircraft_type == "7M8"
 
 
