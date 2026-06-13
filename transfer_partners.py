@@ -19,21 +19,21 @@ Requires MOTHERDUCK_TOKEN. BETTERSTACK_SOURCE_TOKEN enables metrics/log shipping
 
 from __future__ import annotations
 
-import argparse
-import asyncio
+import argparse  # noqa: F401 — used in main()
+import asyncio  # noqa: F401 — used in fetch_page()
 import logging
 import os
 import re
-import subprocess
-import time
-import urllib.request
+import subprocess  # noqa: F401 — used in _fetch_with_nodriver()
+import time  # noqa: F401 — used in main()
+import urllib.request  # noqa: F401 — used in _ping_heartbeat()
 from decimal import ROUND_HALF_UP, Decimal
 
 import duckdb
-import nodriver as uc
+import nodriver as uc  # noqa: F401 — used in _fetch_with_nodriver()
 from bs4 import BeautifulSoup
 
-from obs import flush, install_log_shipping, ship_metric
+from obs import flush, install_log_shipping, ship_metric  # noqa: F401 — used in main()
 
 logger = logging.getLogger("transfer_partners")
 
@@ -243,5 +243,47 @@ def parse_partners(html: str) -> tuple[list[dict], dict]:
     return records, stats
 
 
-def reconcile(conn, records: list[dict], dry_run: bool = False) -> tuple[int, int]:
-    raise NotImplementedError
+def reconcile(
+    conn: duckdb.DuckDBPyConnection,
+    records: list[dict],
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """Full-table snapshot-replace of transfer_partners (this job is the sole owner).
+
+    Deletes EVERY row, then inserts the freshly-scraped records. Returns
+    (rows_deleted, rows_inserted). dry_run → no writes, returns (0, 0).
+    """
+    if dry_run:
+        count = conn.execute("SELECT COUNT(*) FROM transfer_partners").fetchone()[0]
+        logger.info(
+            "[dry-run] Would delete %d row(s) and insert %d row(s).", count, len(records)
+        )
+        return 0, 0
+
+    deleted = conn.execute("DELETE FROM transfer_partners").fetchone()[0]
+
+    inserted = 0
+    if records:
+        conn.executemany(
+            """
+            INSERT INTO transfer_partners
+                (bank_program_id, airline_code, program_name,
+                 transfer_ratio, min_transfer, transfer_increment)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    r["bank_program_id"],
+                    r["airline_code"],
+                    r["program_name"],
+                    r["transfer_ratio"],
+                    r["min_transfer"],
+                    r["transfer_increment"],
+                )
+                for r in records
+            ],
+        )
+        inserted = len(records)
+
+    logger.info("Deleted %d row(s), inserted %d row(s).", deleted, inserted)
+    return deleted, inserted

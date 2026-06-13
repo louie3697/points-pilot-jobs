@@ -12,8 +12,11 @@ from __future__ import annotations
 import duckdb
 import pytest
 
-from transfer_partners import _parse_ratio, parse_partners, reconcile
-
+from transfer_partners import (
+    _parse_ratio,
+    parse_partners,
+    reconcile,
+)
 
 # ---------------------------------------------------------------------------
 # _parse_ratio — site writes "bank : partner"; internal ratio = bank / partner
@@ -120,3 +123,56 @@ def test_parse_no_managed_tables_raises():
     """A page with no managed bank tables → ValueError (structure changed)."""
     with pytest.raises(ValueError, match="no managed bank tables"):
         parse_partners("<html><body><p>nothing here</p></body></html>")
+
+
+@pytest.fixture()
+def mem_conn():
+    """In-memory DuckDB with the transfer_partners schema + a stale Marriott row."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("SET TimeZone='UTC'")
+    conn.execute("""
+        CREATE TABLE transfer_partners (
+            bank_program_id    SMALLINT     NOT NULL,
+            airline_code       VARCHAR(10)  NOT NULL,
+            program_name       VARCHAR      NOT NULL,
+            transfer_ratio     DECIMAL(5,2) NOT NULL DEFAULT 1.00,
+            min_transfer       INTEGER      NOT NULL DEFAULT 1000,
+            transfer_increment INTEGER      NOT NULL DEFAULT 1000,
+            PRIMARY KEY (bank_program_id, airline_code)
+        )
+    """)
+    # Stale data the snapshot must fully replace — incl. a Marriott (id 6) row.
+    conn.execute(
+        "INSERT INTO transfer_partners VALUES (6, 'AS', 'Mileage Plan', 3.0, 3000, 3000)"
+    )
+    conn.execute(
+        "INSERT INTO transfer_partners VALUES (1, 'UA', 'MileagePlus', 1.0, 1000, 1000)"
+    )
+    return conn
+
+
+def _sample_records():
+    return [
+        {"bank_program_id": 1, "airline_code": "SQ", "program_name": "KrisFlyer",
+         "transfer_ratio": 1.0, "min_transfer": 1000, "transfer_increment": 1000},
+        {"bank_program_id": 2, "airline_code": "CX", "program_name": "Asia Miles",
+         "transfer_ratio": 1.25, "min_transfer": 1000, "transfer_increment": 1000},
+    ]
+
+
+def test_reconcile_full_snapshot_drops_marriott(mem_conn):
+    """All prior rows (incl. Marriott id 6) deleted; only the new records remain."""
+    deleted, inserted = reconcile(mem_conn, _sample_records())
+    assert deleted == 2
+    assert inserted == 2
+    rows = mem_conn.execute(
+        "SELECT bank_program_id, airline_code FROM transfer_partners ORDER BY ALL"
+    ).fetchall()
+    assert rows == [(1, "SQ"), (2, "CX")]  # no id 6, no stale UA
+
+
+def test_reconcile_dry_run_leaves_table_unchanged(mem_conn):
+    """--dry-run: returns (0, 0), no writes; stale rows still present."""
+    deleted, inserted = reconcile(mem_conn, _sample_records(), dry_run=True)
+    assert (deleted, inserted) == (0, 0)
+    assert mem_conn.execute("SELECT COUNT(*) FROM transfer_partners").fetchone()[0] == 2
