@@ -287,3 +287,139 @@ def reconcile(
 
     logger.info("Deleted %d row(s), inserted %d row(s).", deleted, inserted)
     return deleted, inserted
+
+
+def _ping_heartbeat() -> None:
+    if not PARTNERS_HEARTBEAT_URL:
+        return
+    try:
+        urllib.request.urlopen(PARTNERS_HEARTBEAT_URL, timeout=10).close()
+    except Exception as exc:  # noqa: BLE001 — monitoring must never break the run
+        logger.warning("heartbeat ping failed: %s", exc)
+
+
+def _find_chrome() -> str:
+    """Return path to Chrome/Chromium binary, searching common locations."""
+    import shutil
+
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",  # macOS
+        "/usr/bin/google-chrome-stable",  # GHA ubuntu-latest after setup-chrome
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
+        found = shutil.which(name)
+        if found:
+            return found
+    raise RuntimeError(
+        "Chrome/Chromium not found. Install Google Chrome or set up browser-actions/setup-chrome."
+    )
+
+
+async def _fetch_with_nodriver(url: str, wait_secs: int = 5) -> str:
+    """Fetch *url* using a headless Chrome CDP session (WAF bypass)."""
+    port = 9222
+    chrome_bin = _find_chrome()
+    proc = subprocess.Popen(
+        [
+            chrome_bin,
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={port}",
+            "--remote-debugging-host=127.0.0.1",
+            "--user-data-dir=/tmp/tp-scrape-profile",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(3)  # wait for Chrome to bind the debug port
+    try:
+        browser = await uc.start(host="127.0.0.1", port=port)
+        page = await browser.get(url)
+        await asyncio.sleep(wait_secs)  # allow JS/redirect to settle
+        html = await page.get_content()
+        browser.stop()  # sync method — no await
+        return html
+    finally:
+        proc.terminate()
+
+
+def fetch_page(url: str = SOURCE_URL) -> str:
+    """Fetch the transfer-partners page via headless Chrome (nodriver)."""
+    return asyncio.run(_fetch_with_nodriver(url))
+
+
+def connect() -> duckdb.DuckDBPyConnection:
+    """Open a UTC-pinned MotherDuck connection to the point_pilot database."""
+    if not os.environ.get("MOTHERDUCK_TOKEN"):
+        raise RuntimeError("MOTHERDUCK_TOKEN is not set — cannot connect to MotherDuck.")
+    conn = duckdb.connect("md:point_pilot")
+    conn.execute("SET TimeZone='UTC'")
+    return conn
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Fetch + parse, but skip DELETE/INSERT. Reports what would change.",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    install_log_shipping("points-pilot-jobs")
+
+    started = time.monotonic()
+    deleted = inserted = 0
+    stats: dict = {}
+    ok = False
+    try:
+        html = fetch_page()
+        records, stats = parse_partners(html)
+        logger.info(
+            "Parsed %d transfer-partner row(s) across %d bank(s) (banks_missing=%d).",
+            len(records), stats["banks_found"], stats["banks_missing"],
+        )
+
+        conn = connect()
+        deleted, inserted = reconcile(conn, records, dry_run=args.dry_run)
+        ok = True
+        return 0
+    except Exception:
+        logger.exception("transfer_partners failed")
+        return 1
+    finally:
+        ship_metric(
+            {
+                "event": "transfer_partners_run",
+                "service": "points-pilot-jobs",
+                "job": "transfer_partners",
+                "ok": ok,
+                "deleted": deleted,
+                "inserted": inserted,
+                "dry_run": args.dry_run,
+                "duration_s": round(time.monotonic() - started, 3),
+                # Debugging breakdown (empty {} if the fetch/parse failed before stats).
+                **stats,
+            }
+        )
+        flush()
+        # Heartbeat only on a successful real run (dry-runs are manual).
+        if ok and not args.dry_run:
+            _ping_heartbeat()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
