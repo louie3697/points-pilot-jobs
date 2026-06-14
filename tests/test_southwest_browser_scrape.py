@@ -22,3 +22,10 @@ def test_build_plan_cron_mode_both_directions():
     assert len(pairs) == 2 * len(SOUTHWEST_ROUTES)
     assert ("LAS", "LAX") in pairs and ("LAX", "LAS") in pairs
     assert dates == [date(2026, 6, 13), date(2026, 6, 14), date(2026, 6, 15)]
+
+
+def test_southwest_routes_count_and_no_reverse_dups():
+    assert len(SOUTHWEST_ROUTES) == 22
+    keys = [frozenset(p) for p in SOUTHWEST_ROUTES]
+    assert len(keys) == len(set(keys)), "reverse/exact dup in SOUTHWEST_ROUTES"
+    assert all(len(k) == 2 for k in keys)

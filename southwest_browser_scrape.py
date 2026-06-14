@@ -35,8 +35,9 @@ logging.basicConfig(
 logging.getLogger().handlers[0].addFilter(_SuppressHashlibWarnings())
 logger = logging.getLogger("southwest_browser_scrape")
 
-# Most-popular Southwest focus-city markets; both directions are scraped.
+# Most-popular Southwest focus-city markets (22 pairs); both directions are scraped.
 SOUTHWEST_ROUTES: list[tuple[str, str]] = [
+    # existing focus-city pairs
     ("LAS", "LAX"),
     ("LAS", "OAK"),
     ("DAL", "HOU"),
@@ -47,6 +48,19 @@ SOUTHWEST_ROUTES: list[tuple[str, str]] = [
     ("SAN", "LAS"),
     ("DAL", "MDW"),
     ("DEN", "LAS"),
+    # new: DEN / MDW / BWI / PHX focus-city spokes + SEA-LAX (search demand)
+    ("DEN", "LAX"),
+    ("DEN", "MDW"),
+    ("DEN", "BWI"),
+    ("DEN", "OAK"),
+    ("MDW", "MCO"),
+    ("MDW", "BWI"),
+    ("BWI", "FLL"),
+    ("BWI", "BOS"),
+    ("PHX", "LAX"),
+    ("PHX", "SAN"),
+    ("OAK", "SAN"),
+    ("SEA", "LAX"),
 ]
 SCRAPE_DAYS = int(os.getenv("SOUTHWEST_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
