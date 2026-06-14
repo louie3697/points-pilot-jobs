@@ -38,3 +38,14 @@ def test_build_plan_cron_mode_both_directions():
     assert ("LAX", "ATL") in pairs
     assert len(dates) == 2
     assert len(pairs) == 2 * len(DELTA_ROUTES)
+
+
+def test_delta_routes_count_and_no_reverse_dups():
+    assert len(DELTA_ROUTES) == 26
+    keys = [frozenset(p) for p in DELTA_ROUTES]
+    assert len(keys) == len(set(keys)), "reverse/exact dup in DELTA_ROUTES"
+    assert all(len(k) == 2 for k in keys)
+
+
+def test_delta_covers_msp_demand():
+    assert ("MSP", "JFK") in DELTA_ROUTES  # the 0-result gap from the logs

@@ -36,8 +36,9 @@ logging.basicConfig(
 logging.getLogger().handlers[0].addFilter(_SuppressHashlibWarnings())
 logger = logging.getLogger("delta_browser_scrape")
 
-# Most-popular Delta routes (ATL megahub + busiest transcons); both directions are scraped.
+# Most-popular Delta routes (ATL megahub + transcons + MSP/DTW/SLC hubs); both directions scraped.
 DELTA_ROUTES: list[tuple[str, str]] = [
+    # existing ATL megahub + transcons
     ("ATL", "LAX"),
     ("ATL", "MCO"),
     ("ATL", "LGA"),
@@ -48,6 +49,24 @@ DELTA_ROUTES: list[tuple[str, str]] = [
     ("ATL", "BOS"),
     ("LAX", "SEA"),
     ("ATL", "DFW"),
+    # new: MSP hub (serves the 0-result demand from the search logs)
+    ("MSP", "JFK"),
+    ("MSP", "SEA"),
+    ("MSP", "HNL"),
+    ("MSP", "LAX"),
+    ("MSP", "ATL"),
+    ("MSP", "DTW"),
+    ("MSP", "MCO"),
+    ("MSP", "LAS"),
+    ("MSP", "DEN"),
+    ("MSP", "BOS"),
+    # new: DTW + SLC hubs
+    ("DTW", "ATL"),
+    ("DTW", "LAX"),
+    ("DTW", "MCO"),
+    ("DTW", "LGA"),
+    ("SLC", "ATL"),
+    ("SLC", "SEA"),
 ]
 SCRAPE_DAYS = int(os.getenv("DELTA_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
