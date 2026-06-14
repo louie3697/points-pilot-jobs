@@ -12,9 +12,10 @@ database (`md:point_pilot`).
 | `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `transfer_bonuses` table. |
 | `transfer_partners.py` | `transfer-partners.yml` | 1st & 15th, 10:00 UTC | Scrapes bank→airline transfer partners + ratios from thriftytraveler.com and full-table snapshot-replaces the `transfer_partners` table (sole owner). |
 | `delta_browser_scrape.py` | `delta-browser-scrape.yml` | daily 08:00 UTC + on-demand dispatch | `nodriver` browser scrape of Delta award space (Azure runner IP clears Akamai) → `flights`. |
+| `southwest_browser_scrape.py` | `southwest-browser-scrape.yml` | daily 09:00 UTC + on-demand dispatch | `nodriver` browser scrape of Southwest Rapid Rewards award space (Azure runner IP mints the F5/Shape sensor) → `flights`. |
 
 `obs.py` is the shared Better Stack
-shipper used by the cleanup + transfer jobs (Delta uses the vendored `pipeline/obs.py`);
+shipper used by the cleanup + transfer jobs (Delta and Southwest use the vendored `pipeline/obs.py`);
 `conftest.py` holds shared pytest fixtures.
 
 ### `cleanup_flights.py`
@@ -95,6 +96,7 @@ Add these as repository secrets (Settings → Secrets and variables → Actions)
 | `BONUSES_HEARTBEAT_URL` | no | Better Stack heartbeat for the transfer-bonuses run |
 | `TRANSFER_PARTNERS_HEARTBEAT_URL` | no | Better Stack heartbeat for the transfer-partners run |
 | `DELTA_HEARTBEAT_URL` | no | Better Stack heartbeat for the daily Delta browser scrape |
+| `SOUTHWEST_HEARTBEAT_URL` | no | Better Stack heartbeat for the daily Southwest browser scrape |
 
 The workflows also expose a manual **Run workflow** button (`workflow_dispatch`)
 with a `dry_run` toggle.

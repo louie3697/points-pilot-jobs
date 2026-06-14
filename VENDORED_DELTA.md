@@ -1,12 +1,12 @@
-# Vendored Delta scraper (for delta-browser-scrape)
+# Vendored Delta + Southwest scrapers (for delta-browser-scrape / southwest-browser-scrape)
 
-`scrapers/`, `config/`, `db/`, `pipeline/` here let this repo run the nodriver Delta browser
-scrape **self-contained** (GH Actions Azure IP clears Akamai where Fly's IP gets HTTP 444), with
-no cross-repo checkout / PAT.
+`scrapers/`, `config/`, `db/`, `pipeline/` here let this repo run the nodriver Delta and
+Southwest browser scrapes **self-contained** (GH Actions Azure IP clears Akamai / mints the
+F5/Shape sensor where Fly's IP gets blocked), with no cross-repo checkout / PAT.
 
-Files: `scrapers/{base,browser,delta}.py`, `config/{settings,airport_tz}.py`,
+Files: `scrapers/{base,browser,delta,southwest}.py`, `config/{settings,airport_tz}.py`,
 `db/{connection,queries,schema}.py`, `pipeline/normalizer.py`, `pipeline/obs.py`.
-Entry point: `delta_browser_scrape.py`.
+Entry points: `delta_browser_scrape.py`, `southwest_browser_scrape.py`.
 
 `config/airport_tz.py` (copy of the scraper repo's) maps airport → IANA tz so `delta.py`
 stores tz-aware local departure/arrival times (a naive value would land in the TIMESTAMPTZ
