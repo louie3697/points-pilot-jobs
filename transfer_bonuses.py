@@ -340,7 +340,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         force=True,
     )
-    install_log_shipping("points-pilot-jobs")
+    install_log_shipping("point-pilot-jobs")
 
     started = time.monotonic()
     deleted = inserted = 0
@@ -361,7 +361,7 @@ def main() -> int:
         ship_metric(
             {
                 "event": "transfer_bonuses_run",
-                "service": "points-pilot-jobs",
+                "service": "point-pilot-jobs",
                 "job": "transfer_bonuses",
                 "ok": ok,
                 "deleted": deleted,
