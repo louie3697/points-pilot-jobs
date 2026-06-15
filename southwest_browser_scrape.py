@@ -20,19 +20,11 @@ from datetime import date, datetime, timedelta, timezone
 SOUTHWEST_HEARTBEAT_URL = os.getenv("SOUTHWEST_HEARTBEAT_URL", "")  # optional GH-Actions heartbeat
 
 
-class _SuppressHashlibWarnings(logging.Filter):
-    """Drop the blake2b/blake2s errors some Python builds' hashlib emits on import."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "blake2" not in record.getMessage()
-
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logging.getLogger().handlers[0].addFilter(_SuppressHashlibWarnings())
 logger = logging.getLogger("southwest_browser_scrape")
 
 # Most-popular Southwest focus-city markets (22 pairs); both directions are scraped.

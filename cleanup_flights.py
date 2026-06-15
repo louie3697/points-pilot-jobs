@@ -82,7 +82,7 @@ def main() -> int:
         force=True,
     )
     # Ship WARNING+ logs to Better Stack (no-op without BETTERSTACK_SOURCE_TOKEN).
-    install_log_shipping("points-pilot-jobs")
+    install_log_shipping("point-pilot-jobs")
 
     started = time.monotonic()
     deleted = 0
@@ -116,7 +116,7 @@ def main() -> int:
     finally:
         metric = {
             "event": "cleanup_flights_run",
-            "service": "points-pilot-jobs",
+            "service": "point-pilot-jobs",
             "job": "cleanup_flights",
             "ok": ok,
             "deleted": deleted,

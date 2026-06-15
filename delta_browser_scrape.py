@@ -21,19 +21,11 @@ from datetime import date, datetime, timedelta, timezone
 DELTA_HEARTBEAT_URL = os.getenv("DELTA_HEARTBEAT_URL", "")  # optional GH-Actions run heartbeat
 
 
-class _SuppressHashlibWarnings(logging.Filter):
-    """Drop the blake2b/blake2s errors some Python builds' hashlib emits on import."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return "blake2" not in record.getMessage()
-
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logging.getLogger().handlers[0].addFilter(_SuppressHashlibWarnings())
 logger = logging.getLogger("delta_browser_scrape")
 
 # Most-popular Delta routes (ATL megahub + transcons + MSP/DTW/SLC hubs); both directions scraped.
