@@ -345,6 +345,30 @@ async def drive_tap(tab):
     )
     print(f"[REWARD] {rw}", flush=True)
     await tab.sleep(2)
+    # dump the booking widget (the container holding the Search + Select Dates + Pay-with-miles
+    # controls) so we can target the From/To origin/destination controls (not standard inputs)
+    try:
+        bw = await tab.evaluate(
+            "(()=>{const btns=[...document.querySelectorAll('button')].filter(e=>/^\\s*Search\\s*$/i.test(e.textContent||''));"
+            "let c=btns[0];if(!c)return 'no-search-btn';for(let i=0;i<10&&c.parentElement;i++){c=c.parentElement;"
+            "if((c.textContent||'').includes('Select Dates')&&(c.textContent||'').length>120)break;}return c.outerHTML;})()"
+        )
+        if isinstance(bw, str) and bw not in ('no-search-btn',):
+            with open('cap_tap_widget.html', 'w') as fh:
+                fh.write(bw[:600000])
+            print(f"BWIDGET_HTML saved ({len(bw)} chars)", flush=True)
+        else:
+            print(f"BWIDGET: {bw}", flush=True)
+    except Exception as e:
+        print(f"BWIDGET_ERR {str(e)[:80]}", flush=True)
+    inv = await tab.evaluate(
+        "(()=>{const vis=e=>e.offsetParent;"
+        "const ctrls=[...document.querySelectorAll('input,[role=combobox],[role=button],button,[role=textbox],[contenteditable]')]"
+        ".filter(e=>vis(e)&&/from|to|origin|destination|depart|where|fly|city|airport|leaving|going/i.test((e.getAttribute('aria-label')||'')+(e.placeholder||'')+(e.id||'')+(e.textContent||'').slice(0,20)))"
+        ".map(e=>(((e.tagName)+'#'+(e.id||'')+'@'+(e.getAttribute('aria-label')||'')+'/'+(e.placeholder||'')+'='+(e.textContent||'').slice(0,15)).replace(/\\s+/g,' ').trim()).slice(0,70));"
+        "return JSON.stringify([...new Set(ctrls)].slice(0,16));})()"
+    )
+    print(f"[TP CTRLS] {str(inv)[:900]}", flush=True)
     await click_exact(tab, "one way", "one-way")
     await tab.sleep(1)
     await _tp_state(tab, "after-oneway")
