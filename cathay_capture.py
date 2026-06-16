@@ -248,13 +248,26 @@ async def drive_cathay(tab):
         "if(cb){cb.setAttribute('data-ppdate','1');return 'tagged:'+(cb.getAttribute('aria-expanded')||'');}return 'notag';})()"
     )
     print(f"[DATE TAG] {tagged}", flush=True)
+    # compute the combobox's on-screen center, then dispatch a REAL CDP mouse click there
+    # (nodriver's element-center click misfired to the header; explicit coords are reliable)
     try:
-        el = await tab.select("[data-ppdate='1']")
-        if el:
-            await el.click()  # real CDP click
-            print("[DATE OPEN] real-click issued", flush=True)
+        rect = await tab.evaluate(
+            "(()=>{const e=document.querySelector(\"[data-ppdate='1']\");if(!e)return 'null';"
+            "e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
+            "return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,h:r.height});})()"
+        )
+        pos = json.loads(rect) if isinstance(rect, str) and rect != "null" else None
+        print(f"[DATE RECT] {rect}", flush=True)
+        if pos and pos.get("w", 0) > 0:
+            await tab.sleep(0.5)
+            x, y = float(pos["x"]), float(pos["y"])
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            print(f"[DATE OPEN] real CDP click at ({x:.0f},{y:.0f})", flush=True)
     except Exception as e:
-        print(f"[DATE OPEN] real-click err {type(e).__name__}: {str(e)[:80]}", flush=True)
+        print(f"[DATE OPEN] click err {type(e).__name__}: {str(e)[:80]}", flush=True)
     await tab.sleep(2.0)
     # broad dump of any visible calendar/picker overlay that appeared
     daydump = await tab.evaluate(
@@ -278,27 +291,53 @@ async def drive_cathay(tab):
             print(f"CALENDAR_HTML saved ({len(cal)} chars)", flush=True)
     except Exception:
         pass
-    # click a non-disabled future day cell (target day ~3 weeks out, fall back to any high day)
-    picked = await tab.evaluate(
-        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button')]"
+    # find a non-disabled future day cell, return its center coords, then real CDP click it
+    dayrect = await tab.evaluate(
+        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span')]"
         ".filter(e=>e.offsetParent&&/^\\s*\\d{1,2}\\s*$/.test(e.textContent||'')"
         "&&!/disabled|past|--disabled/i.test((e.className||'')+(e.getAttribute('aria-disabled')||''))"
         "&&e.getAttribute('aria-disabled')!=='true');"
         "const want=cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "');"
         "const r=want||cells.find(e=>+e.textContent.trim()>=22)||cells[cells.length-1];"
-        "if(r){r.scrollIntoView({block:'center'});r.click();return 'day:'+r.textContent.trim();}return 'no-day';})()"
+        "if(!r)return 'no-day';r.scrollIntoView({block:'center'});const b=r.getBoundingClientRect();"
+        "return JSON.stringify({day:r.textContent.trim(),x:b.x+b.width/2,y:b.y+b.height/2,w:b.width});})()"
     )
-    print(f"[DAY PICK] {picked}", flush=True)
+    print(f"[DAY PICK] {dayrect}", flush=True)
+    try:
+        dp = json.loads(dayrect) if isinstance(dayrect, str) and dayrect.startswith("{") else None
+        if dp and dp.get("w", 0) > 0:
+            x, y = float(dp["x"]), float(dp["y"])
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            print(f"[DAY CLICK] real CDP click day {dp['day']} at ({x:.0f},{y:.0f})", flush=True)
+    except Exception as e:
+        print(f"[DAY CLICK] err {type(e).__name__}: {str(e)[:80]}", flush=True)
     await tab.sleep(1.2)
     await click_exact(tab, "confirm", "done", "ok", "apply", "select")
     await _redibe_state(tab, "02date")
-    # click the redibe search button (#redibe-v3-button); it enables once From+To+date are set
-    clicked = await tab.evaluate(
-        "(()=>{const b=document.getElementById('redibe-v3-button');"
-        "if(!b)return 'no-button';const dis=b.getAttribute('aria-disabled')==='true'||/--disabled/.test(b.className||'');"
-        "b.scrollIntoView({block:'center'});b.click();return 'clicked redibe-v3-button disabled='+dis;})()"
+    # click the redibe search button (#redibe-v3-button) with a real CDP click; it enables once
+    # From+To+date are set
+    btnrect = await tab.evaluate(
+        "(()=>{const b=document.getElementById('redibe-v3-button');if(!b)return 'no-button';"
+        "const dis=b.getAttribute('aria-disabled')==='true'||/--disabled/.test(b.className||'');"
+        "b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect();"
+        "return JSON.stringify({disabled:dis,x:r.x+r.width/2,y:r.y+r.height/2,w:r.width});})()"
     )
-    print(f"[SEARCH CLICK] {clicked}", flush=True)
+    print(f"[SEARCH BTN] {btnrect}", flush=True)
+    try:
+        bp = json.loads(btnrect) if isinstance(btnrect, str) and btnrect.startswith("{") else None
+        if bp and bp.get("w", 0) > 0:
+            x, y = float(bp["x"]), float(bp["y"])
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mousePressed", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            await tab.send(uc.cdp.input_.dispatch_mouse_event(
+                type_="mouseReleased", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+            print(f"[SEARCH CLICK] real CDP click at ({x:.0f},{y:.0f}) disabled={bp.get('disabled')}",
+                  flush=True)
+    except Exception as e:
+        print(f"[SEARCH CLICK] err {type(e).__name__}: {str(e)[:80]}", flush=True)
     await tab.sleep(26)  # availability is slow (IBE session + api.cathaypacific.com pricing)
     await diag(tab, "03results")
 
