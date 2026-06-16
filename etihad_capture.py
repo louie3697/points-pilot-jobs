@@ -390,6 +390,34 @@ async def main():
             print(f"DOM_PRICES: {dom}", flush=True)
         except Exception:
             pass
+        # CAPTURE=0 → availability is SSR'd or service-worker fetched. Locate where the raw
+        # pricing data lives: scan <script> tags + window globals for the known mile figures.
+        try:
+            probe = await tab.evaluate(r"""
+            (()=>{
+              const NEEDLES=['540375','83625','82375','540,375','83,625'];
+              const out={scripts:[],windowKeys:[],swActive:false,htmlHasRaw:false};
+              try{out.swActive=!!(navigator.serviceWorker&&navigator.serviceWorker.controller);}catch(e){}
+              const html=document.documentElement.innerHTML;
+              out.htmlHasRaw=NEEDLES.some(n=>html.indexOf(n)>=0);
+              for(const s of document.querySelectorAll('script')){
+                const t=s.textContent||''; const hit=NEEDLES.find(n=>t.indexOf(n)>=0);
+                if(t.length>200||s.id||s.type){
+                  out.scripts.push({id:s.id||'',type:s.type||'',len:t.length,hit:hit||'',
+                    head:t.slice(0,80).replace(/\s+/g,' ')});
+                }
+              }
+              for(const k of Object.keys(window)){
+                try{const v=window[k];
+                  if(v&&typeof v==='object'){const j=JSON.stringify(v);
+                    if(j&&j.length>1000&&NEEDLES.some(n=>j.indexOf(n)>=0)) out.windowKeys.push({k,len:j.length});}
+                }catch(e){}
+              }
+              return JSON.stringify(out);
+            })()""")
+            print(f"STATE_PROBE: {str(probe)[:3500]}", flush=True)
+        except Exception as e:
+            print(f"STATE_PROBE_ERR {type(e).__name__}: {str(e)[:100]}", flush=True)
         try:
             await tab.save_screenshot("etihad_capture.png")
         except Exception:
