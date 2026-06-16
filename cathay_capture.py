@@ -240,17 +240,30 @@ async def drive_cathay(tab):
         await fill_airport(tab, ["from", "leaving from"], ORIGIN_CITY, ORIGIN_CODE)
         await fill_airport(tab, ["going to", "to"], DEST_CITY, DEST_CODE)
     await _redibe_state(tab, "01airports")
-    # date: the departure date is a <span role=combobox> with a calendar icon — click its combobox
-    # container to open the picker, dump it, then click a future day cell.
-    opened = await tab.evaluate(
+    # date: the departure date is a <span role=combobox> with a calendar icon. A synthetic JS
+    # .click() doesn't open the redibe picker — it binds to a real pointer event — so tag the
+    # combobox, select it, and issue a REAL nodriver CDP click.
+    tagged = await tab.evaluate(
         "(()=>{const cb=[...document.querySelectorAll('[role=combobox]')].find(e=>e.offsetParent&&e.querySelector('.redibe-v3-icon_calendar'));"
-        "if(cb){cb.scrollIntoView({block:'center'});cb.click();return 'date-combobox-clicked';}return 'no-date-combobox';})()"
+        "if(cb){cb.setAttribute('data-ppdate','1');return 'tagged:'+(cb.getAttribute('aria-expanded')||'');}return 'notag';})()"
     )
-    print(f"[DATE OPEN] {opened}", flush=True)
-    await tab.sleep(1.8)
+    print(f"[DATE TAG] {tagged}", flush=True)
+    try:
+        el = await tab.select("[data-ppdate='1']")
+        if el:
+            await el.click()  # real CDP click
+            print("[DATE OPEN] real-click issued", flush=True)
+    except Exception as e:
+        print(f"[DATE OPEN] real-click err {type(e).__name__}: {str(e)[:80]}", flush=True)
+    await tab.sleep(2.0)
+    # broad dump of any visible calendar/picker overlay that appeared
     daydump = await tab.evaluate(
-        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[class*=month],[role=grid]')].find(e=>e.offsetParent);"
-        "return c?c.outerHTML.slice(0,900):'no-calendar';})()"
+        "(()=>{const cands=[...document.querySelectorAll('[role=dialog],[role=grid],[role=listbox],"
+        "[class*=calendar],[class*=picker],[class*=month],[class*=redibe-v3-date],[class*=daterange]')]"
+        ".filter(e=>e.offsetParent&&(e.textContent||'').length>40);"
+        "if(!cands.length)return 'no-open-overlay';"
+        "const c=cands.sort((a,b)=>b.querySelectorAll('*').length-a.querySelectorAll('*').length)[0];"
+        "return (c.className||c.getAttribute('role'))+' :: '+c.outerHTML.slice(0,700);})()"
     )
     print(f"[CALENDAR] {str(daydump)[:900]}", flush=True)
     # dump calendar HTML to an artifact for offline day-selector design
