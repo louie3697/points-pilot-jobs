@@ -211,6 +211,28 @@ async def _kill_overlays(tab):
         print(f"[NOTIF] err {str(e)[:60]}", flush=True)
 
 
+async def _fill_vs_airport(tab, label, city, code):
+    """Focus a Virgin autocomplete field by aria-label, type the city, dump the dropdown, then
+    click the option matching the IATA code."""
+    await click_field(tab, label)
+    await tab.sleep(0.8)
+    await type_focused(tab, city)
+    await tab.sleep(3)
+    opts = await tab.evaluate(
+        "JSON.stringify([...document.querySelectorAll('[role=option],li,[class*=suggestion],[id*=option],[class*=autocomplete] li')]"
+        ".filter(e=>e.offsetParent&&(e.textContent||'').trim().length>2&&(e.textContent||'').length<70)"
+        ".map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim()).slice(0,8))"
+    )
+    print(f"[VS OPTS {label} {code}] {str(opts)[:280]}", flush=True)
+    picked = await tab.evaluate(
+        "(()=>{const o=[...document.querySelectorAll('[role=option],li,[class*=suggestion],[id*=option],button,a')]"
+        ".find(e=>e.offsetParent&&(e.textContent||'').toUpperCase().includes('" + code.upper() + "'));"
+        "if(o){o.scrollIntoView({block:'center'});o.click();return 'picked:'+o.textContent.replace(/\\s+/g,' ').trim().slice(0,40);}return 'noopt';})()"
+    )
+    print(f"[VS PICK {label} {code}] {picked}", flush=True)
+    await tab.sleep(1.2)
+
+
 async def _real_click(tab, find_expr, label, is_fn=False):
     """Find an element via a JS expression, scroll it into view, and dispatch a REAL CDP mouse
     click at its center (synthetic .click() often won't open date pickers / submit redibe-style
@@ -338,44 +360,39 @@ async def drive_virgin(tab):
     await click_exact(tab, "one way", "one-way")
     await tab.sleep(1)
     await _vs_state(tab, "after-oneway")
-    await fill_airport(tab, ["origin", "from", "leaving from", "where from", "select origin"],
-                       ORIGIN_CITY, ORIGIN_CODE)
-    await fill_airport(tab, ["destination", "to", "going to", "flying to", "where to", "select destination"],
-                       DEST_CITY, DEST_CODE)
-    await _vs_state(tab, "after-airports")
-    # date: open the Departure field with a REAL CDP click (synthetic clicks often don't open the
-    # picker), dump the calendar, then real-click a future day cell.
-    await _real_click(tab,
-        "[...document.querySelectorAll('input,[role=button],[role=combobox],button,div')]"
-        ".find(e=>e.offsetParent&&/departure|depart|select date|when|outbound/i.test"
-        "((e.getAttribute('aria-label')||'')+(e.placeholder||'')+(e.textContent||'').slice(0,30)))",
-        "departure-field")
-    await tab.sleep(2)
+    # Virgin's "Flying from"/"Flying to" are autocomplete comboboxes — fill each separately,
+    # dump its dropdown, and pick the option matching the IATA code.
+    await _fill_vs_airport(tab, "flying from", ORIGIN_CITY, ORIGIN_CODE)
+    await _vs_state(tab, "after-from")
+    await _fill_vs_airport(tab, "flying to", DEST_CITY, DEST_CODE)
+    await _vs_state(tab, "after-to")
+    # date: open the "When" field, dump the calendar, real-click a future day cell
+    await click_field(tab, "when", "departure", "depart", "select date", "date", "outbound")
+    await tab.sleep(1.8)
     cal = await tab.evaluate(
-        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid],[class*=month]')].find(e=>e.offsetParent);"
-        "return c?c.outerHTML.slice(0,500):'no-calendar';})()"
+        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid],[class*=month],[class*=DatePicker]')].find(e=>e.offsetParent);"
+        "return c?c.outerHTML.slice(0,700):'no-calendar';})()"
     )
-    print(f"[CALENDAR] {str(cal)[:500]}", flush=True)
+    print(f"[CALENDAR] {str(cal)[:700]}", flush=True)
     await _real_click(tab,
-        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span,div')]"
+        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span,div,a')]"
         ".filter(e=>e.offsetParent&&/^\\s*\\d{1,2}\\s*$/.test(e.textContent||'')"
         "&&!/disabled|past|--disabled/i.test((e.className||'')+(e.getAttribute('aria-disabled')||''))"
         "&&e.getAttribute('aria-disabled')!=='true');"
         "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells.find(e=>+e.textContent.trim()>=22)||cells[cells.length-1];})()",
-        "day-cell", is_fn=True)
+        "day-cell")
     await tab.sleep(1)
-    await click_exact(tab, "confirm", "ok", "done", "apply", "select", "accept")
+    await click_exact(tab, "confirm", "ok", "done", "apply", "select", "add", "search dates")
     await _vs_state(tab, "after-date")
-    # search (the LifeMiles CTA is "Smart Search")
+    # search
     await _real_click(tab,
         "[...document.querySelectorAll('button,[role=button],input[type=submit]')]"
-        ".find(e=>e.offsetParent&&/smart search|search flights|^\\s*search/i.test"
+        ".find(e=>e.offsetParent&&/search flights|search for reward|^\\s*search/i.test"
         "((e.textContent||'')+(e.getAttribute('aria-label')||'')+(e.value||'')))",
         "search-btn")
-    await tab.sleep(26)  # availability render / API
-    # detect login-gating vs results
+    await tab.sleep(28)  # availability render / API (/travelplus/search-panel-api)
     where = await tab.evaluate(
-        "JSON.stringify({url:location.href.slice(0,80),sso:/sso\\.virgin|openid-connect|\\/auth\\/|login/i.test(location.href)})"
+        "JSON.stringify({url:location.href.slice(0,90),sso:/openid-connect|\\/auth\\/|signin|login/i.test(location.href)})"
     )
     print(f"[AFTER SEARCH] {where}", flush=True)
     await diag(tab, "03results")
@@ -386,8 +403,8 @@ SKIP = ("google", "doubleclick", "adsrvr", "facebook", "tiktok", "optimizely", "
         "quantummetric", "kampyle", "sojern", "bing", "pinterest", "applicationinsights",
         "datadog", "linkedin", "akstat", "akam", "/akam/", "boomerang", "mpulse",
         "newrelic", "nr-data", "cdn-cgi", "fonts.", ".woff", ".css", ".js?", ".svg", ".png",
-        # reference data, not availability (these are airport lists — false award positives)
-        "coredata", "search-panel", "/origins/", "/destinations/", "/airports", "/stations")
+        # NOTE: do NOT skip "search-panel" — Virgin's availability API is /travelplus/search-panel-api
+        "coredata", "/origins/", "/destinations/")
 # Require an actual award-miles signal, not generic "amount/price/total" that match everything.
 AWARD_KW = ("mile", "avios", "milesamount", "fareawards", "rewardseat", "pointsprice",
             "awardprice", "redeemmiles", "milevalue", "redemption")
