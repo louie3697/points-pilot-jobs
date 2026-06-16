@@ -373,6 +373,16 @@ async def drive_qantas(tab):
     await tab.sleep(1.5)
     chk = await tab.evaluate("(document.getElementById('usePoints')||{}).getAttribute&&document.getElementById('usePoints').getAttribute('aria-checked')")
     print(f"[REWARD] usePoints aria-checked={chk}", flush=True)
+    # set one-way (default round-trip needs a return date too) via #trip-type-toggle-button listbox
+    await _real_click(tab, "document.getElementById('trip-type-toggle-button')", "trip-type")
+    await tab.sleep(1.2)
+    await _real_click(tab,
+        "[...document.querySelectorAll('[role=option],li,#trip-type-menu *,[id*=trip-type] *,[aria-controls=trip-type-menu] ~ * *')]"
+        ".find(e=>e.offsetParent&&/^\\s*one.?way\\s*$/i.test(e.textContent||''))",
+        "oneway-opt")
+    await tab.sleep(1)
+    tt = await tab.evaluate("((document.getElementById('trip-type-toggle-button')||{}).textContent||'').replace(/\\s+/g,' ').trim().slice(0,20)")
+    print(f"[TRIPTYPE] {tt}", flush=True)
     await _fill_qf(tab, "departurePort-input", ORIGIN_CITY, ORIGIN_CODE)
     await _fill_qf(tab, "arrivalPort-input", DEST_CITY, DEST_CODE)
     await _qf_state(tab, "after-airports")
@@ -388,13 +398,13 @@ async def drive_qantas(tab):
         "return JSON.stringify({expanded:b&&b.getAttribute('aria-expanded'),visibleGrids:grids.length,sampleDays:days});})()"
     )
     print(f"[DAYPICKER] {str(daydump)[:500]}", flush=True)
-    # pick the first non-disabled day whose aria-label is in the target month range
+    # day cells have aria-label like "Wed Jul 15 2026. Select for departure date" — pick mid-July
     await _real_click(tab,
-        "[...document.querySelectorAll('button[aria-label],[role=gridcell],td[role]')]"
+        "[...document.querySelectorAll('button[aria-label]')]"
         ".find(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'"
-        "&&/\\b(15|16|17|18|19|2[0-5])\\b.*(July|Jul)\\b.*2026|\\b(July|Jul)\\b.*\\b(15|16|17|18|19|2[0-5])\\b/i.test(e.getAttribute('aria-label')||''))",
+        "&&/\\bJul\\s+(1[5-9]|2[0-5])\\s+2026/i.test(e.getAttribute('aria-label')||''))",
         "dep-day")
-    await tab.sleep(1.2)
+    await tab.sleep(1.5)
     await _qf_state(tab, "after-date")
     # submit
     await _real_click(tab,
