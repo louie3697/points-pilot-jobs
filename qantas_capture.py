@@ -211,6 +211,29 @@ async def _kill_overlays(tab):
         print(f"[NOTIF] err {str(e)[:60]}", flush=True)
 
 
+async def _fill_qf(tab, input_id, city, code):
+    """Focus a Qantas autocomplete input by id, type the city, dump the dropdown, real-click the
+    option matching the IATA code."""
+    await tab.evaluate(
+        "(()=>{const e=document.getElementById('" + input_id + "');"
+        "if(e){e.scrollIntoView({block:'center'});e.focus();e.click();}return !!e;})()"
+    )
+    await tab.sleep(0.8)
+    await type_focused(tab, city)
+    await tab.sleep(3)
+    opts = await tab.evaluate(
+        "JSON.stringify([...document.querySelectorAll('[role=option],li,[class*=option],[id*=listbox] *,[class*=suggestion]')]"
+        ".filter(e=>e.offsetParent&&(e.textContent||'').trim().length>2&&(e.textContent||'').length<70)"
+        ".map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim()).slice(0,6))"
+    )
+    print(f"[QF OPTS {input_id} {code}] {str(opts)[:240]}", flush=True)
+    await _real_click(tab,
+        "[...document.querySelectorAll('[role=option],li,[class*=option],[id*=listbox] *,button,a')]"
+        ".find(e=>e.offsetParent&&(e.textContent||'').toUpperCase().includes('" + code.upper() + "'))",
+        f"pick-{code}")
+    await tab.sleep(1.3)
+
+
 async def _real_click(tab, find_expr, label, is_fn=False):
     """Find an element via a JS expression, scroll it into view, and dispatch a REAL CDP mouse
     click at its center (synthetic .click() often won't open date pickers / submit redibe-style
@@ -343,18 +366,49 @@ async def drive_qantas(tab):
             print("WIDGET_HTML: no-form", flush=True)
     except Exception as e:
         print(f"WIDGET_DUMP_ERR {str(e)[:80]}", flush=True)
-    inv = await tab.evaluate(
-        "(()=>{const vis=e=>e.offsetParent;"
-        "const toggles=[...document.querySelectorAll('label,[role=switch],[role=checkbox],[role=radio],[role=tab],button')]"
-        ".filter(e=>vis(e)&&/point|reward|cash|class|use|pay with/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')))"
-        ".map(e=>(((e.textContent||'')+'|'+(e.getAttribute('aria-label')||'')).replace(/\\s+/g,' ').trim()).slice(0,40));"
-        "const fields=[...document.querySelectorAll('input,[role=combobox]')].filter(vis)"
-        ".map(e=>(((e.getAttribute('aria-label')||'')+'#'+(e.id||'')+'#'+(e.placeholder||'')).slice(0,55)));"
-        "const btns=[...document.querySelectorAll('button,input[type=submit],[role=button]')].filter(e=>vis(e)&&/search|find|date|depart|continue/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')))"
-        ".map(e=>(((e.textContent||'')+'|'+(e.getAttribute('aria-label')||'')+'#'+(e.id||'')).replace(/\\s+/g,' ').trim()).slice(0,45));"
-        "return JSON.stringify({toggles:[...new Set(toggles)].slice(0,12),fields:[...new Set(fields)].slice(0,16),btns:[...new Set(btns)].slice(0,12)});})()"
+    # --- targeted Qantas driver (stable IDs: #usePoints, #departurePort-input, #arrivalPort-input,
+    # #daypicker-button, submit in [data-testid=search-flights-btn]) ---
+    upd = await tab.evaluate(
+        "(()=>{const b=document.getElementById('usePoints');if(!b)return 'no-usePoints';"
+        "if(b.getAttribute('aria-checked')!=='true')b.click();"
+        "return 'usePoints aria-checked='+b.getAttribute('aria-checked');})()"
     )
-    print(f"[QF INVENTORY] {str(inv)[:1100]}", flush=True)
+    print(f"[REWARD] {upd}", flush=True)
+    await tab.sleep(2)
+    await _fill_qf(tab, "departurePort-input", ORIGIN_CITY, ORIGIN_CODE)
+    await _fill_qf(tab, "arrivalPort-input", DEST_CITY, DEST_CODE)
+    await _qf_state(tab, "after-airports")
+    # date: open #daypicker-button dialog, dump it, real-click a future day
+    await _real_click(tab, "document.getElementById('daypicker-button')", "daypicker")
+    await tab.sleep(2)
+    daydump = await tab.evaluate(
+        "(()=>{const d=document.querySelector('[role=dialog],[class*=daypicker],[class*=DayPicker],[class*=calendar]');"
+        "if(!d)return 'no-dialog';const days=[...d.querySelectorAll('button,[role=gridcell],td')]"
+        ".filter(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true').slice(0,3)"
+        ".map(e=>((e.getAttribute('aria-label')||e.textContent||'')+'#'+(e.getAttribute('data-day')||e.getAttribute('data-date')||'')).replace(/\\s+/g,' ').trim().slice(0,40));"
+        "return JSON.stringify({sampleDays:days,dialogClass:(d.className||'').slice(0,40)});})()"
+    )
+    print(f"[DAYPICKER] {str(daydump)[:400]}", flush=True)
+    await _real_click(tab,
+        "(()=>{const d=document.querySelector('[role=dialog],[class*=daypicker],[class*=calendar]')||document;"
+        "const cells=[...d.querySelectorAll('button,[role=gridcell],td')]"
+        ".filter(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'"
+        "&&/^\\s*\\d{1,2}\\s*$|\\b(July|August)\\b/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')));"
+        "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells[Math.min(20,cells.length-1)];})()",
+        "day-cell")
+    await tab.sleep(1)
+    await click_exact(tab, "done", "apply", "confirm", "ok", "select dates")
+    await _qf_state(tab, "after-date")
+    # submit
+    await _real_click(tab,
+        "(document.querySelector('[data-testid=search-flights-btn] button[type=submit]')||"
+        "document.querySelector('[data-testid=search-flights-btn] button'))",
+        "submit")
+    await tab.sleep(28)
+    where = await tab.evaluate(
+        "JSON.stringify({url:location.href.slice(0,90),sso:/login|signin|auth0|oauth|identity/i.test(location.href)})"
+    )
+    print(f"[AFTER SEARCH] {where}", flush=True)
     await diag(tab, "03results")
 
 # --------------------------------------------------------------- post-processing
