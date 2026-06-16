@@ -227,11 +227,19 @@ async def _fill_tap(tab, ph_kw, city, code):
         ".map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim()).slice(0,6))"
     )
     print(f"[TP OPTS {ph_kw} {code}] {str(opts)[:240]}", flush=True)
+    # TAP groups NYC airports ("New York, All airports (NYC)") so the option may not contain the
+    # specific IATA — match the city name OR the code, preferring an exact-code option if present.
     await _real_click(tab,
-        "[...document.querySelectorAll('[role=option]')]"
-        ".find(e=>e.offsetParent&&(e.textContent||'').toUpperCase().includes('" + code.upper() + "'))",
+        "(()=>{const os=[...document.querySelectorAll('[role=option]')].filter(e=>e.offsetParent);"
+        "const U=s=>(s.textContent||'').toUpperCase();"
+        "return os.find(e=>U(e).includes('(" + code.upper() + ")'))||os.find(e=>U(e).includes('" + code.upper() + "'))"
+        "||os.find(e=>U(e).includes('" + city.upper() + "'))||os[0];})()",
         f"pick-{code}")
     await tab.sleep(1.4)
+    cleared = await tab.evaluate(
+        "[...document.querySelectorAll('input[placeholder]')].filter(e=>/origin|destination/i.test(e.placeholder||'')).map(e=>(e.placeholder||'').slice(0,18)+'='+(e.value||'').slice(0,20)).join(' | ')"
+    )
+    print(f"[TP FIELDS {code}] {cleared}", flush=True)
 
 
 async def _real_click(tab, find_expr, label, is_fn=False):
