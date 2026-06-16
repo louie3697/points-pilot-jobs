@@ -233,8 +233,24 @@ async def drive_airfrance(tab):
     """Discovery drive of the Air France homepage award widget: toggle Book with Miles, From=JFK
     (defaults), To=Paris/CDG, pick a date, Search -> results render in-page. Dumps widget HTML +
     field/button state at each stage so we can refine the driver and find the API/DOM."""
+    # AF gates the whole page behind a consent wall (bare "Reject"/"Accept" buttons) — dismiss it
+    # (privacy-preserving: prefer Reject / Continue-without-accepting) so the widget renders.
+    for _ in range(4):
+        c = await tab.evaluate(
+            "(()=>{const bs=[...document.querySelectorAll('button,a,[role=button]')].filter(e=>e.offsetParent);"
+            "const norm=e=>(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
+            "const pref=['continue without accepting','reject all','reject','refuse','necessary only'];"
+            "for(const p of pref){const e=bs.find(x=>norm(x)===p);if(e){e.click();return 'consent:'+p;}}"
+            "const a=bs.find(x=>norm(x)==='accept'||norm(x)==='accept all');"
+            "if(a){a.click();return 'consent:accept';}return 'no-consent';})()"
+        )
+        print(f"[CONSENT] {c}", flush=True)
+        if c == "no-consent":
+            break
+        await tab.sleep(2.5)
     await accept_cookies(tab)
     await _kill_overlays(tab)
+    await tab.sleep(3)  # let the booking widget render after consent
     await diag(tab, "00warm")
     # dump the booking widget HTML for offline structure analysis
     try:
