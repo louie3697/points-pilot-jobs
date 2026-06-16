@@ -131,7 +131,8 @@ class TurkishScraper(BrowserScraper):
         return (
             "(async () => {"
             f"  const URL={json.dumps(_API_URL)}, CABINS={json.dumps(cabins)};"
-            f"  const O={json.dumps(origin.upper())}, D={json.dumps(dest.upper())}, DT={json.dumps(date_str)};"
+            f"  const O={json.dumps(origin.upper())}, D={json.dumps(dest.upper())},"
+            f" DT={json.dumps(date_str)};"
             f"  const RETRIES={self._px_retries}, WAIT={int(self._px_wait_s * 1000)};"
             "   const uuid=()=>crypto.randomUUID();"
             "   const sleep=ms=>new Promise(r=>setTimeout(r,ms));"
