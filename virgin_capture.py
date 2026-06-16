@@ -366,23 +366,29 @@ async def drive_virgin(tab):
     await _vs_state(tab, "after-from")
     await _fill_vs_airport(tab, "flying to", DEST_CITY, DEST_CODE)
     await _vs_state(tab, "after-to")
-    # date: open the "When" field, dump the calendar, real-click a future day cell
-    await click_field(tab, "when", "departure", "depart", "select date", "date", "outbound")
-    await tab.sleep(1.8)
+    # date: REAL-click the "When" field/button to open the date picker (synthetic focus didn't),
+    # dump the calendar, and ONLY click a day if a calendar actually opened.
+    await _real_click(tab,
+        "[...document.querySelectorAll('input,button,[role=button],[role=combobox],div,span')]"
+        ".find(e=>e.offsetParent&&/^\\s*when\\b|select dates|departure date|add dates|choose date/i.test"
+        "((e.getAttribute('aria-label')||'')+'|'+(e.textContent||'').slice(0,20)))",
+        "when-field")
+    await tab.sleep(2)
     cal = await tab.evaluate(
-        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid],[class*=month],[class*=DatePicker]')].find(e=>e.offsetParent);"
-        "return c?c.outerHTML.slice(0,700):'no-calendar';})()"
+        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid],[class*=month],[class*=DatePicker],[class*=Calendar]')].find(e=>e.offsetParent);"
+        "return c?(c.className+' :: '+c.outerHTML.slice(0,600)):'no-calendar';})()"
     )
     print(f"[CALENDAR] {str(cal)[:700]}", flush=True)
-    await _real_click(tab,
-        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span,div,a')]"
-        ".filter(e=>e.offsetParent&&/^\\s*\\d{1,2}\\s*$/.test(e.textContent||'')"
-        "&&!/disabled|past|--disabled/i.test((e.className||'')+(e.getAttribute('aria-disabled')||''))"
-        "&&e.getAttribute('aria-disabled')!=='true');"
-        "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells.find(e=>+e.textContent.trim()>=22)||cells[cells.length-1];})()",
-        "day-cell")
-    await tab.sleep(1)
-    await click_exact(tab, "confirm", "ok", "done", "apply", "select", "add", "search dates")
+    if isinstance(cal, str) and cal != "no-calendar":
+        await _real_click(tab,
+            "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span,a')]"
+            ".filter(e=>e.offsetParent&&/^\\s*\\d{1,2}\\s*$/.test(e.textContent||'')"
+            "&&!/disabled|past|--disabled/i.test((e.className||'')+(e.getAttribute('aria-disabled')||''))"
+            "&&e.getAttribute('aria-disabled')!=='true'&&e.closest('[class*=calendar],[class*=picker],[role=grid],[class*=Calendar]'));"
+            "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells.find(e=>+e.textContent.trim()>=22)||cells[0];})()",
+            "day-cell")
+        await tab.sleep(1)
+        await click_exact(tab, "confirm", "ok", "done", "apply", "select", "add", "search dates", "search for flights")
     await _vs_state(tab, "after-date")
     # search
     await _real_click(tab,
