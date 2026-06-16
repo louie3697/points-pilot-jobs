@@ -204,6 +204,19 @@ async def drive_cathay(tab):
     candidate search buttons dumped at each stage) so a failed drive reveals the form shape."""
     await accept_cookies(tab)
     await diag(tab, "00warm")
+    # dump the redibe widget container HTML for offline date/search-button design
+    try:
+        wh = await tab.evaluate(
+            "(()=>{const cs=[...document.querySelectorAll('[class*=redibe],[id*=redibe]')];"
+            "let best=null,bn=0;for(const c of cs){const n=c.querySelectorAll('input,button').length;"
+            "if(n>bn){bn=n;best=c;}}return best?best.outerHTML:'no-redibe';})()"
+        )
+        if isinstance(wh, str):
+            with open("cap_cathay_widget.html", "w") as f:
+                f.write(wh[:600000])
+            print(f"WIDGET_HTML saved ({len(wh)} chars)", flush=True)
+    except Exception as e:
+        print(f"WIDGET_DUMP_ERR {type(e).__name__}: {str(e)[:80]}", flush=True)
     await click_exact(tab, "one way", "one-way")
     await tab.sleep(1)
     # From is the 1st redibe text input, Going to the 2nd (ids carry random suffixes)
