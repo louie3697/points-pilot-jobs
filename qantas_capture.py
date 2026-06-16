@@ -412,14 +412,41 @@ async def drive_qantas(tab):
         "dep-day")
     await tab.sleep(1.5)
     await _qf_state(tab, "after-date")
-    # submit
+    # submit — diagnose the button first (disabled? where?), real-click it, then check for
+    # validation errors / inline results / navigation. Qantas may open results in a new tab.
+    sbtn = await tab.evaluate(
+        "(()=>{const b=document.querySelector('[data-testid=search-flights-btn] button[type=submit]')"
+        "||document.querySelector('[data-testid=search-flights-btn] button');if(!b)return 'no-submit-btn';"
+        "const r=b.getBoundingClientRect();return JSON.stringify({disabled:b.disabled,"
+        "ariaDisabled:b.getAttribute('aria-disabled'),text:(b.textContent||'').slice(0,20),"
+        "x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),w:r.width});})()"
+    )
+    print(f"[SUBMIT BTN] {sbtn}", flush=True)
     await _real_click(tab,
         "(document.querySelector('[data-testid=search-flights-btn] button[type=submit]')||"
         "document.querySelector('[data-testid=search-flights-btn] button'))",
         "submit")
-    await tab.sleep(28)
+    await tab.sleep(4)
+    val = await tab.evaluate(
+        "JSON.stringify([...document.querySelectorAll('[aria-invalid=true],[class*=error],[role=alert],[class*=Error]')]"
+        ".filter(e=>e.offsetParent&&(e.textContent||'').trim()).map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim().slice(0,55)).slice(0,5))"
+    )
+    print(f"[VALIDATION] {str(val)[:400]}", flush=True)
+    # fallback: if still on /book/flights, try requestSubmit on the form
+    await tab.sleep(20)
+    fb = await tab.evaluate(
+        "(()=>{if(!/\\/book\\/flights$/.test(location.pathname))return 'navigated';"
+        "const b=document.querySelector('[data-testid=search-flights-btn] button');"
+        "if(b&&b.form&&b.form.requestSubmit){try{b.form.requestSubmit(b);return 'requestSubmit';}catch(e){return 'rs-err:'+e}}"
+        "return 'no-form';})()"
+    )
+    print(f"[SUBMIT FALLBACK] {fb}", flush=True)
+    await tab.sleep(10)
     where = await tab.evaluate(
-        "JSON.stringify({url:location.href.slice(0,90),sso:/login|signin|auth0|oauth|identity/i.test(location.href)})"
+        "JSON.stringify({url:location.href.slice(0,90),path:location.pathname,"
+        "sso:/login|signin|auth0|oauth|identity/i.test(location.href),"
+        "bodyLen:document.body?document.body.innerText.length:0,"
+        "hasResults:/from\\s|points|economy|business/i.test((document.body?document.body.innerText:'').slice(0,5000))})"
     )
     print(f"[AFTER SEARCH] {where}", flush=True)
     await diag(tab, "03results")
