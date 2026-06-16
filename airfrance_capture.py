@@ -239,19 +239,35 @@ async def drive_airfrance(tab):
         c = await tab.evaluate(
             "(()=>{const bs=[...document.querySelectorAll('button,a,[role=button]')].filter(e=>e.offsetParent);"
             "const norm=e=>(e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase();"
-            "const pref=['continue without accepting','reject all','reject','refuse','necessary only'];"
+            # discovery: accept to make the widget render (privacy revisited once it's understood)
+            "const pref=['accept all','accept all cookies','accept','agree'];"
             "for(const p of pref){const e=bs.find(x=>norm(x)===p);if(e){e.click();return 'consent:'+p;}}"
-            "const a=bs.find(x=>norm(x)==='accept'||norm(x)==='accept all');"
-            "if(a){a.click();return 'consent:accept';}return 'no-consent';})()"
+            "return 'no-consent';})()"
         )
         print(f"[CONSENT] {c}", flush=True)
         if c == "no-consent":
             break
         await tab.sleep(2.5)
     await accept_cookies(tab)
+    # close any feedback/survey modal that covers the page
+    await tab.evaluate(
+        "(()=>{const b=[...document.querySelectorAll('button,[role=button],[aria-label]')]"
+        ".find(e=>e.offsetParent&&/close feedback|close|dismiss|no thanks/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')));"
+        "if(b){b.click();return 'closed';}return 'none';})()"
+    )
     await _kill_overlays(tab)
-    await tab.sleep(3)  # let the booking widget render after consent
+    await tab.sleep(10)  # the booking widget renders lazily after consent
     await diag(tab, "00warm")
+    # rich probe: is the widget present? body text, iframes, miles/booking elements
+    probe = await tab.evaluate(
+        "(()=>{const b=document.body?document.body.innerText:'';"
+        "const frames=[...document.querySelectorAll('iframe')].map(f=>(f.src||'').slice(0,70)).filter(Boolean);"
+        "const hits=[...document.querySelectorAll('label,button,input,[role=combobox]')].filter(e=>e.offsetParent&&"
+        "/miles|departing|going to|flying blue|book|where|from|to/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')))"
+        ".map(e=>((e.textContent||'')+'|'+(e.getAttribute('aria-label')||'')).replace(/\\s+/g,' ').trim().slice(0,40));"
+        "return JSON.stringify({bodyLen:b.length,bodySnip:b.replace(/[0-9]/g,'#').slice(0,200),frames,hits:[...new Set(hits)].slice(0,14)});})()"
+    )
+    print(f"[AF PROBE] {str(probe)[:900]}", flush=True)
     # dump the booking widget HTML for offline structure analysis
     try:
         wh = await tab.evaluate(
