@@ -368,36 +368,33 @@ async def drive_qantas(tab):
         print(f"WIDGET_DUMP_ERR {str(e)[:80]}", flush=True)
     # --- targeted Qantas driver (stable IDs: #usePoints, #departurePort-input, #arrivalPort-input,
     # #daypicker-button, submit in [data-testid=search-flights-btn]) ---
-    upd = await tab.evaluate(
-        "(()=>{const b=document.getElementById('usePoints');if(!b)return 'no-usePoints';"
-        "if(b.getAttribute('aria-checked')!=='true')b.click();"
-        "return 'usePoints aria-checked='+b.getAttribute('aria-checked');})()"
-    )
-    print(f"[REWARD] {upd}", flush=True)
-    await tab.sleep(2)
+    # rewards toggle — REAL-click #usePoints (synthetic .click() doesn't flip the React switch)
+    await _real_click(tab, "document.getElementById('usePoints')", "usePoints")
+    await tab.sleep(1.5)
+    chk = await tab.evaluate("(document.getElementById('usePoints')||{}).getAttribute&&document.getElementById('usePoints').getAttribute('aria-checked')")
+    print(f"[REWARD] usePoints aria-checked={chk}", flush=True)
     await _fill_qf(tab, "departurePort-input", ORIGIN_CITY, ORIGIN_CODE)
     await _fill_qf(tab, "arrivalPort-input", DEST_CITY, DEST_CODE)
     await _qf_state(tab, "after-airports")
-    # date: open #daypicker-button dialog, dump it, real-click a future day
-    await _real_click(tab, "document.getElementById('daypicker-button')", "daypicker")
-    await tab.sleep(2)
+    # date: REAL-click #daypicker-button to open the dialog, dump aria-expanded + visible days
+    await _real_click(tab, "document.getElementById('daypicker-button')", "daypicker-btn")
+    await tab.sleep(2.5)
     daydump = await tab.evaluate(
-        "(()=>{const d=document.querySelector('[role=dialog],[class*=daypicker],[class*=DayPicker],[class*=calendar]');"
-        "if(!d)return 'no-dialog';const days=[...d.querySelectorAll('button,[role=gridcell],td')]"
-        ".filter(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true').slice(0,3)"
-        ".map(e=>((e.getAttribute('aria-label')||e.textContent||'')+'#'+(e.getAttribute('data-day')||e.getAttribute('data-date')||'')).replace(/\\s+/g,' ').trim().slice(0,40));"
-        "return JSON.stringify({sampleDays:days,dialogClass:(d.className||'').slice(0,40)});})()"
+        "(()=>{const b=document.getElementById('daypicker-button');"
+        "const grids=[...document.querySelectorAll('[role=dialog],[role=grid],[class*=daypicker],[class*=DayPicker],[class*=calendar],[class*=Calendar]')].filter(e=>e.offsetParent);"
+        "const days=[...document.querySelectorAll('button[aria-label],[role=gridcell],td[role],button[name]')]"
+        ".filter(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'&&/\\b(2026|July|August|Jul|Aug)\\b/i.test(e.getAttribute('aria-label')||''))"
+        ".slice(0,4).map(e=>(e.getAttribute('aria-label')||'').slice(0,40));"
+        "return JSON.stringify({expanded:b&&b.getAttribute('aria-expanded'),visibleGrids:grids.length,sampleDays:days});})()"
     )
-    print(f"[DAYPICKER] {str(daydump)[:400]}", flush=True)
+    print(f"[DAYPICKER] {str(daydump)[:500]}", flush=True)
+    # pick the first non-disabled day whose aria-label is in the target month range
     await _real_click(tab,
-        "(()=>{const d=document.querySelector('[role=dialog],[class*=daypicker],[class*=calendar]')||document;"
-        "const cells=[...d.querySelectorAll('button,[role=gridcell],td')]"
-        ".filter(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'"
-        "&&/^\\s*\\d{1,2}\\s*$|\\b(July|August)\\b/i.test((e.textContent||'')+(e.getAttribute('aria-label')||'')));"
-        "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells[Math.min(20,cells.length-1)];})()",
-        "day-cell")
-    await tab.sleep(1)
-    await click_exact(tab, "done", "apply", "confirm", "ok", "select dates")
+        "[...document.querySelectorAll('button[aria-label],[role=gridcell],td[role]')]"
+        ".find(e=>e.offsetParent&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'"
+        "&&/\\b(15|16|17|18|19|2[0-5])\\b.*(July|Jul)\\b.*2026|\\b(July|Jul)\\b.*\\b(15|16|17|18|19|2[0-5])\\b/i.test(e.getAttribute('aria-label')||''))",
+        "dep-day")
+    await tab.sleep(1.2)
     await _qf_state(tab, "after-date")
     # submit
     await _real_click(tab,
