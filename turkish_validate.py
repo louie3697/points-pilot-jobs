@@ -1,86 +1,111 @@
-"""Validation harness for the Turkish Miles&Smiles scraper (no DB write).
+"""Staged Turkish transport probe — isolates WHERE the nodriver flow hangs on the Azure IP.
 
-Runs TurkishScraper against US->IST on the GitHub Actions (Azure) IP and prints the records, to
-confirm end-to-end award-data extraction (warm session + in-page availability fetch clears the
-TLS-fingerprint + PerimeterX wall). Exits non-zero on no records. faulthandler dumps stacks if it
-hangs, so a stuck browser op is visible in the log. Imports need MOTHERDUCK_TOKEN (import-time
-settings gate) — set a dummy; this never touches the DB.
+Prints at every stage (chrome launch -> CDP port -> uc.start -> navigate -> readyState -> one
+in-page availability fetch). Run with `python -u` so output is unbuffered. A hard os._exit
+watchdog guarantees the step ends (and logs flush) instead of riding the job timeout.
 """
 
-import faulthandler
-import logging
+import asyncio
+import json
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
-from datetime import date, timedelta
-
-faulthandler.enable()
+import urllib.request
 
 
-def _watchdog() -> None:
-    """If still alive after 300s (a browser op is hung), dump every thread's stack and exit the
-    process CLEANLY — a job-timeout cancel loses the step's logs, but a self-exit keeps them."""
-    time.sleep(300)
-    sys.stderr.write("\n===== WATCHDOG: 300s elapsed, dumping stacks (HUNG) =====\n")
-    sys.stderr.flush()
-    faulthandler.dump_traceback()
-    sys.stderr.flush()
+def P(msg):
+    sys.stdout.write(f">>> {msg}\n")
+    sys.stdout.flush()
+
+
+def _watchdog():
+    time.sleep(150)
+    sys.stdout.write(">>> WATCHDOG 150s — hung, exiting\n")
+    sys.stdout.flush()
     os._exit(3)
 
 
 threading.Thread(target=_watchdog, daemon=True).start()
+P("script start")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
-log = logging.getLogger("turkish_validate")
+import nodriver as uc  # noqa: E402
+from nodriver.core.config import find_chrome_executable  # noqa: E402
+from nodriver.core.util import free_port  # noqa: E402
 
-
-def p(msg: str) -> None:
-    print(f">>> {msg}", flush=True)
+AVAIL = "https://www.turkishairlines.com/api/v1/availability"
+WARM = "https://www.turkishairlines.com/en-us/"
 
 
-p("importing TurkishScraper")
-from scrapers.turkish import TurkishScraper  # noqa: E402
+async def main():
+    port = free_port()
+    prof = tempfile.mkdtemp(prefix="tkprobe_")
+    flags = [
+        "--remote-allow-origins=*", "--remote-debugging-host=127.0.0.1",
+        f"--remote-debugging-port={port}", f"--user-data-dir={prof}",
+        "--no-first-run", "--no-default-browser-check", "--no-service-autorun",
+        "--homepage=about:blank", "--no-pings", "--password-store=basic",
+        "--disable-breakpad", "--disable-dev-shm-usage", "--disable-infobars",
+        "--disable-session-crashed-bubble", "--disable-search-engine-choice-screen",
+        "--disable-features=IsolateOrigins,site-per-process", "--no-sandbox",
+    ]
+    P(f"chrome exe = {find_chrome_executable()}")
+    P("launching chrome")
+    proc = subprocess.Popen([find_chrome_executable(), *flags],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    P("waiting for CDP port")
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1).read()
+            break
+        except Exception:
+            await asyncio.sleep(0.5)
+    P("CDP port up; uc.start")
+    browser = await uc.start(host="127.0.0.1", port=port)
+    P("connected; navigating to warm page")
+    tab = await browser.get(WARM)
+    P("navigate returned; sleeping 8s")
+    await tab.sleep(8)
+    rs = await tab.evaluate("document.readyState")
+    P(f"readyState = {rs!r}")
+    title = await tab.evaluate("document.title")
+    P(f"title = {str(title)[:60]!r}")
 
-# Start tiny: one route, one date, to isolate the transport before scaling up.
-ROUTES = [("SEA", "IST")]
-
-
-def main() -> None:
-    dt = date.today() + timedelta(days=21)
-    p("instantiating TurkishScraper")
-    sc = TurkishScraper()
-    total = 0
+    P("running in-page availability fetch")
+    body = {
+        "selectedBookerSearch": "O", "selectedCabinClass": "ECONOMY", "moduleType": "AWARD",
+        "passengerTypeList": [{"quantity": 1, "code": "ADULT"}],
+        "originDestinationInformationList": [
+            {"originAirportCode": "SEA", "destinationAirportCode": "IST", "departureDate": "10-07-2026"}],
+        "savedDate": "2026-06-16T02:00:00.000Z",
+    }
+    headers = {
+        "accept": "application/json", "content-type": "application/json", "accept-language": "en",
+        "x-clientid": "probe-client", "x-requestid": "probe-req", "x-country": "us",
+        "x-platform": "WEB", "x-conversationid": "probe-conv",
+    }
+    js = (
+        "(async () => {"
+        f"  const res = await fetch({json.dumps(AVAIL)}, {{ method:'POST',"
+        f"    headers: {json.dumps(headers)}, body: JSON.stringify({json.dumps(body)}),"
+        "     credentials:'include' });"
+        "  const t = await res.text();"
+        "  return JSON.stringify({ status: res.status, len: t.length, head: t.slice(0,90) });"
+        "})()"
+    )
+    out = await tab.evaluate(js, await_promise=True)
+    P(f"FETCH RESULT: {out}")
+    P("DONE — tearing down")
     try:
-        for origin, dest in ROUTES:
-            p(f"scrape {origin}-{dest} {dt} START")
-            try:
-                recs = sc.scrape(origin, dest, dt)
-            except Exception as exc:  # noqa: BLE001
-                log.error("scrape %s-%s %s FAILED: %s", origin, dest, dt, exc, exc_info=True)
-                continue
-            p(f"scrape {origin}-{dest} {dt} DONE -> {len(recs)} records")
-            total += len(recs)
-            for r in recs[:5]:
-                log.info(
-                    "    %-9s %s->%s  %6d pts  seats=%s stops=%s dep=%s  %s",
-                    r.cabin_class, r.origin, r.destination, r.points_cost,
-                    r.available_seats, r.stops, r.departure_time_local, r.raw_flight_number,
-                )
-    finally:
-        p("closing scraper")
-        sc.close()
-
-    log.info("TOTAL records: %d", total)
-    if total == 0:
-        log.error("VALIDATION FAILED — 0 records")
-        sys.exit(1)
-    log.info("VALIDATION OK")
+        browser.stop()
+    except Exception:
+        pass
+    proc.terminate()
 
 
 if __name__ == "__main__":
-    main()
+    uc.loop().run_until_complete(main())
+    P("main complete")
