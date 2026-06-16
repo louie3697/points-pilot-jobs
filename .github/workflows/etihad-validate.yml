@@ -1,0 +1,29 @@
+name: etihad-validate
+
+# Validation (workflow_dispatch only): run the Etihad Guest scraper against a couple of US->AUH
+# routes in headful Chrome under xvfb on the Azure IP and print the records — confirms end-to-end
+# award DOM extraction works before wiring the DB-writing cron. No DB write (dummy token).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Validate Etihad scraper (headful Chrome under xvfb, Azure IP)
+        env:
+          MOTHERDUCK_TOKEN: dummy   # import-time settings gate only; this script never hits the DB
+        run: xvfb-run -a timeout -s KILL 360 python -u etihad_validate.py

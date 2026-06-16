@@ -1,0 +1,56 @@
+name: etihad-browser-scrape
+
+# Etihad Guest award scrape, run entirely in this repo (GH Actions / Azure IP clears Etihad's
+# Akamai + Imperva ABP where Fly's IP can't). Headful Chrome under xvfb. Writes Etihad rows into
+# MotherDuck `flights`. DOM-scraped from the public award deep-link
+# (/book/search?...&FLOW=AWARD → /book/cart-new/upsell) — the availability JSON is not reachable
+# as a page/CDP fetch (see scrapers/etihad.py). (websockets pinned <15 — see requirements.)
+on:
+  workflow_dispatch:
+    inputs:
+      origin:
+        description: "Origin IATA (single-route on-demand mode). Blank = popular-routes cron."
+        required: false
+        default: ""
+      destination:
+        description: "Destination IATA (single-route on-demand mode)."
+        required: false
+        default: ""
+      dates:
+        description: "Comma-separated ISO dates (YYYY-MM-DD). Blank = near-term window."
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 11 * * *"   # daily at 11:00 UTC (staggered clear of delta 08 / southwest 09 / turkish 10)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ inputs.origin != '' && format('etihad-ondemand-{0}-{1}', inputs.origin, inputs.destination) || 'etihad-browser-scrape' }}
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Scrape Etihad (headful Chrome under xvfb, Azure IP)
+        env:
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          BETTERSTACK_SOURCE_TOKEN: ${{ secrets.BETTERSTACK_SOURCE_TOKEN }}
+          ETIHAD_HEARTBEAT_URL: ${{ secrets.ETIHAD_HEARTBEAT_URL }}
+          ETIHAD_SCRAPE_DAYS: "3"
+          ETIHAD_ROUTE_ORIGIN: ${{ inputs.origin }}
+          ETIHAD_ROUTE_DEST: ${{ inputs.destination }}
+          ETIHAD_ROUTE_DATES: ${{ inputs.dates }}
+        run: xvfb-run -a python etihad_browser_scrape.py

@@ -8,6 +8,7 @@ airport. `tests/test_airport_tz.py` guards that every seeded route airport is ma
 AIRPORT_TZ: dict[str, str] = {
     "ANC": "America/Anchorage",
     "ATL": "America/New_York",
+    "AUH": "Asia/Dubai",  # Abu Dhabi — Etihad Guest hub (UTC+4, no DST)
     "AUS": "America/Chicago",
     "BNA": "America/Chicago",
     "BOI": "America/Boise",
