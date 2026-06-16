@@ -221,17 +221,23 @@ async def _fill_qf(tab, input_id, city, code):
     await tab.sleep(0.8)
     await type_focused(tab, city)
     await tab.sleep(3)
+    # Qantas airport autocomplete options are role=option (in the input's aria-controls listbox) —
+    # target those specifically (generic li/[class*=option] matched the nav menu before)
     opts = await tab.evaluate(
-        "JSON.stringify([...document.querySelectorAll('[role=option],li,[class*=option],[id*=listbox] *,[class*=suggestion]')]"
-        ".filter(e=>e.offsetParent&&(e.textContent||'').trim().length>2&&(e.textContent||'').length<70)"
-        ".map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim()).slice(0,6))"
+        "JSON.stringify([...document.querySelectorAll('[role=option],[role=listbox] li,ul[id*=listbox] li')]"
+        ".filter(e=>e.offsetParent).map(e=>(e.textContent||'').replace(/\\s+/g,' ').trim()).slice(0,6))"
     )
     print(f"[QF OPTS {input_id} {code}] {str(opts)[:240]}", flush=True)
     await _real_click(tab,
-        "[...document.querySelectorAll('[role=option],li,[class*=option],[id*=listbox] *,button,a')]"
+        "[...document.querySelectorAll('[role=option],[role=listbox] li,ul[id*=listbox] li')]"
         ".find(e=>e.offsetParent&&(e.textContent||'').toUpperCase().includes('" + code.upper() + "'))",
         f"pick-{code}")
-    await tab.sleep(1.3)
+    await tab.sleep(1.4)
+    # verify the commit (a "Clear ... Location" button appears once an airport is selected)
+    cleared = await tab.evaluate(
+        "[...document.querySelectorAll('button[aria-label]')].filter(e=>/Clear (Departure|Arrival) Location/i.test(e.getAttribute('aria-label')||'')).map(e=>e.getAttribute('aria-label')).join(',')"
+    )
+    print(f"[QF COMMIT {code}] {cleared}", flush=True)
 
 
 async def _real_click(tab, find_expr, label, is_fn=False):
