@@ -164,29 +164,85 @@ async def diag(tab, stage):
         pass
 
 
+async def _fill_redibe(tab, input_id, city, code):
+    """Type `city` into a redibe input by id, wait for the autocomplete, then pick option `code`."""
+    js = (
+        "(async()=>{const el=document.getElementById(" + json.dumps(input_id) + ");"
+        "if(!el)return 'no-input';el.scrollIntoView({block:'center'});el.focus();el.click();return 'focused';})()"
+    )
+    await tab.evaluate(js, await_promise=True)
+    await tab.sleep(0.6)
+    await type_focused(tab, city)
+    await tab.sleep(2.8)  # autocomplete XHR + render
+    # pick the dropdown option containing the IATA code (redibe options show "City (CODE)")
+    picked = await tab.evaluate(
+        "(()=>{const opts=[...document.querySelectorAll('[role=option],li,[class*=option],[class*=suggestion],[class*=result]')]"
+        ".filter(e=>e.offsetParent&&e.textContent&&e.textContent.toUpperCase().includes('(" + code.upper() + ")'));"
+        "if(opts[0]){opts[0].scrollIntoView({block:'center'});opts[0].click();return 'picked:'+opts[0].textContent.replace(/\\s+/g,' ').trim().slice(0,40);}return 'noopt';})()"
+    )
+    print(f"[FILL {input_id} {code}] {picked}", flush=True)
+    await tab.sleep(1)
+
+
+async def _redibe_state(tab, stage):
+    js = (
+        "(()=>{const ins=[...document.querySelectorAll('input[id^=redibe-v3-text]')].map(e=>e.id+'='+JSON.stringify(e.value));"
+        "const dates=[...document.querySelectorAll('input[id^=redibe-v3]')].map(e=>e.id+'='+JSON.stringify(e.value)).filter(s=>!s.includes('text'));"
+        "const btns=[...document.querySelectorAll('button,[role=button],input[type=submit]')].filter(e=>e.offsetParent&&/search|continue|find|show flights/i.test((e.textContent||'')+(e.value||'')))"
+        ".map(e=>({tx:((e.textContent||'')+(e.value||'')).replace(/\\s+/g,' ').trim().slice(0,30),cls:(e.className||'').slice(0,50),inRedibe:!!e.closest('[class*=redibe],[id*=redibe]')}));"
+        "return JSON.stringify({inputs:ins,dateInputs:dates,searchBtns:btns});})()"
+    )
+    try:
+        print(f"[REDIBE {stage}] {await tab.evaluate(js)}", flush=True)
+    except Exception as e:
+        print(f"[REDIBE {stage}] err {str(e)[:80]}", flush=True)
+
+
 async def drive_cathay(tab):
-    """Drive the redibe-v3 redemption widget on the Redeem Flight Awards page: one-way, From=JFK,
-    Going to=HKG, pick a date, Search → submits to flights.cathaypacific.com. Heavily instrumented
-    so a failed drive still reveals the form shape for the next iteration."""
+    """Drive the redibe-v3 redemption widget: one-way, From=JFK, Going to=HKG, pick a date,
+    Search → submits to flights.cathaypacific.com. Heavily instrumented (redibe input values +
+    candidate search buttons dumped at each stage) so a failed drive reveals the form shape."""
     await accept_cookies(tab)
     await diag(tab, "00warm")
     await click_exact(tab, "one way", "one-way")
     await tab.sleep(1)
-    await fill_airport(tab, ["from", "leaving from", "origin", "where from"],
-                       ORIGIN_CITY, ORIGIN_CODE)
-    await fill_airport(tab, ["going to", "to", "destination", "where to"],
-                       DEST_CITY, DEST_CODE)
-    await diag(tab, "01airports")
+    # From is the 1st redibe text input, Going to the 2nd (ids carry random suffixes)
+    ids = await tab.evaluate(
+        "JSON.stringify([...document.querySelectorAll('input[id^=redibe-v3-text]')].map(e=>e.id))"
+    )
+    try:
+        id_list = json.loads(ids) if isinstance(ids, str) else []
+    except Exception:
+        id_list = []
+    print(f"[REDIBE input ids] {id_list}", flush=True)
+    if len(id_list) >= 2:
+        await _fill_redibe(tab, id_list[0], ORIGIN_CITY, ORIGIN_CODE)
+        await _fill_redibe(tab, id_list[1], DEST_CITY, DEST_CODE)
+    else:
+        await fill_airport(tab, ["from", "leaving from"], ORIGIN_CITY, ORIGIN_CODE)
+        await fill_airport(tab, ["going to", "to"], DEST_CITY, DEST_CODE)
+    await _redibe_state(tab, "01airports")
+    # date: click the departure date field, dump the calendar, pick a valid future day
     await click_field(tab, "departure", "depart", "dates", "select date", "when", "travel date")
-    await tab.sleep(1)
+    await tab.sleep(1.5)
+    daydump = await tab.evaluate(
+        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid]')].find(e=>e.offsetParent);"
+        "return c?c.outerHTML.slice(0,500):'no-calendar';})()"
+    )
+    print(f"[CALENDAR] {str(daydump)[:500]}", flush=True)
     await click_exact(tab, FUTURE_DAY, allow_nav=True)
     await tab.sleep(1)
     await click_exact(tab, "confirm", "done", "ok", "apply")
-    await diag(tab, "02date")
-    await click_exact(tab, "search", "search flights", "find flights", "show flights")
-    await tab.sleep(10)
-    await click_exact(tab, "search", "search flights", "find flights", "continue")  # 2nd nudge
-    await tab.sleep(24)  # availability is slow (IBE session + api.cathaypacific.com pricing)
+    await _redibe_state(tab, "02date")
+    # click the redibe search button (prefer one inside the redibe widget, not the site header)
+    clicked = await tab.evaluate(
+        "(()=>{const bs=[...document.querySelectorAll('button,[role=button],input[type=submit]')]"
+        ".filter(e=>e.offsetParent&&/^\\s*search/i.test((e.textContent||'')+(e.value||''))&&!e.closest('header,nav'));"
+        "const r=bs.find(e=>e.closest('[class*=redibe],[id*=redibe]'))||bs[0];"
+        "if(r){r.scrollIntoView({block:'center'});r.click();return 'clicked:'+((r.textContent||r.value||'').replace(/\\s+/g,' ').trim().slice(0,30));}return 'no-search-btn';})()"
+    )
+    print(f"[SEARCH CLICK] {clicked}", flush=True)
+    await tab.sleep(26)  # availability is slow (IBE session + api.cathaypacific.com pricing)
     await diag(tab, "03results")
 
 
