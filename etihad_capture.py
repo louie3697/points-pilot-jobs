@@ -333,12 +333,57 @@ async def main():
     browser = await uc.start(host="127.0.0.1", port=port)
 
     cap = []
+    net_meta: dict = {}
+    net_bodies: list = []
     try:
         tab = await browser.get("about:blank")
         try:
             await tab.send(uc.cdp.page.add_script_to_evaluate_on_new_document(INTERCEPT))
         except Exception as e:
             print("inject_err", str(e)[:80], flush=True)
+
+        # CDP Network capture — catches service-worker / SSR traffic that a page-context fetch
+        # patch misses. Bypass the service worker so SW-handled requests hit the network stack
+        # (and thus fire responseReceived/loadingFinished with retrievable bodies).
+        async def _on_response(ev):
+            try:
+                r = ev.response
+                net_meta[str(ev.request_id)] = {
+                    "url": r.url, "status": r.status, "mime": r.mime_type,
+                    "type": str(getattr(ev, "type_", "")), "rid": ev.request_id,
+                }
+            except Exception:
+                pass
+
+        async def _on_finish(ev):
+            try:
+                meta = net_meta.get(str(ev.request_id))
+                if not meta:
+                    return
+                u = meta["url"].lower()
+                if u.startswith("blob:") or u.startswith("data:") or any(k in u for k in SKIP):
+                    return
+                mime = (meta.get("mime") or "").lower()
+                want = ("json" in mime
+                        or ("html" in mime and "/book/" in u)
+                        or ("/book/" in u and "search" in u))
+                if not want:
+                    return
+                body, _b64 = await tab.send(uc.cdp.network.get_response_body(meta["rid"]))
+                if body and len(body) > 300:
+                    net_bodies.append({"url": meta["url"], "status": meta["status"],
+                                       "mime": meta["mime"], "type": meta["type"],
+                                       "n": len(body), "b": body[:400000]})
+            except Exception:
+                pass
+
+        try:
+            tab.add_handler(uc.cdp.network.ResponseReceived, _on_response)
+            tab.add_handler(uc.cdp.network.LoadingFinished, _on_finish)
+            await tab.send(uc.cdp.network.enable())
+            await tab.send(uc.cdp.network.set_bypass_service_worker(bypass=True))
+        except Exception as e:
+            print(f"NET_SETUP_ERR {type(e).__name__}: {str(e)[:100]}", flush=True)
         # warm the Amadeus DXP host so Imperva/Akamai trust the session
         await tab.get(DIGITAL_ROOT)
         await tab.sleep(12)
@@ -390,6 +435,24 @@ async def main():
             print(f"DOM_PRICES: {dom}", flush=True)
         except Exception:
             pass
+        # Structured DOM dump of the result cards — fallback parser target if the API stays hidden.
+        try:
+            cards = await tab.evaluate(r"""
+            (()=>{
+              const seen=new Set(), out=[];
+              const els=[...document.querySelectorAll('*')].filter(e=>/From\s*Miles/i.test(e.textContent||''));
+              for(const e of els){
+                let c=e; for(let i=0;i<5&&c.parentElement;i++){const p=c.parentElement;
+                  if((p.textContent||'').length>900)break; c=p;}
+                const t=(c.textContent||'').replace(/\s+/g,' ').trim();
+                if(t.length<40||t.length>700||seen.has(t))continue; seen.add(t); out.push(t);
+                if(out.length>=8)break;
+              }
+              return JSON.stringify(out);
+            })()""")
+            print(f"DOM_CARDS: {str(cards)[:3500]}", flush=True)
+        except Exception as e:
+            print(f"DOM_CARDS_ERR {type(e).__name__}: {str(e)[:100]}", flush=True)
         # CAPTURE=0 → availability is SSR'd or service-worker fetched. Locate where the raw
         # pricing data lives: scan <script> tags + window globals for the known mile figures.
         try:
@@ -415,7 +478,7 @@ async def main():
               }
               return JSON.stringify(out);
             })()""")
-            print(f"STATE_PROBE: {str(probe)[:3500]}", flush=True)
+            print(f"STATE_PROBE: {str(probe)[:7000]}", flush=True)
         except Exception as e:
             print(f"STATE_PROBE_ERR {type(e).__name__}: {str(e)[:100]}", flush=True)
         try:
@@ -432,6 +495,34 @@ async def main():
     with open("cap_etihad_full.json", "w") as f:
         json.dump(cap, f)
     analyze(cap)
+
+    # CDP Network-layer capture (catches service-worker / SSR responses)
+    with open("cap_etihad_net.json", "w") as f:
+        json.dump(net_bodies, f)
+    print(f"\n===== CDP NET: {len(net_bodies)} captured bodies =====", flush=True)
+    NEEDLES = ("540375", "83625", "82375", '"miles"', "milesamount", "fareawards")
+    award_net = []
+    for r in net_bodies:
+        bl = r["b"].lower()
+        print(f"  {r['type']:10} {r['status']} {r['mime'][:24]:24} n={r['n']:>7}  {r['url'][:120]}",
+              flush=True)
+        if any(n in bl for n in NEEDLES):
+            award_net.append(r)
+    for idx, r in enumerate(award_net[:3]):
+        print(f"\n========== CDP AWARD BODY #{idx} ==========", flush=True)
+        print(f"URL: {r['url']}\nMIME: {r['mime']}  TYPE: {r['type']}  LEN: {r['n']}", flush=True)
+        try:
+            data = json.loads(r["b"])
+            print("--- SKELETON ---\n" + skeleton(data)[:7000], flush=True)
+            print("--- MILE PATHS ---", flush=True)
+            for line in find_mile_paths(data)[:60]:
+                print("  " + line, flush=True)
+        except Exception:
+            # not JSON (e.g. SSR HTML) — show context around the first mile figure
+            b = r["b"]
+            i = next((b.find(n) for n in ("540375", "83625", "82375") if b.find(n) >= 0), -1)
+            if i >= 0:
+                print(f"--- HTML context @ {i} ---\n{b[max(0,i-400):i+400]}", flush=True)
     print("\n=== DONE ===", flush=True)
 
 

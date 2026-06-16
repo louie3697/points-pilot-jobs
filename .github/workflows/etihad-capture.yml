@@ -34,5 +34,6 @@ jobs:
           name: etihad-capture
           path: |
             cap_etihad_full.json
+            cap_etihad_net.json
             etihad_*.png
           if-no-files-found: ignore
