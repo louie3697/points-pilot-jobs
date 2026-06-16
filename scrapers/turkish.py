@@ -21,6 +21,7 @@ from BrowserScraper; this class only builds the request and maps the response to
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -82,11 +83,19 @@ class TurkishScraper(BrowserScraper):
     program_name = "Miles&Smiles"
     source = "turkish"
 
-    # Browser transport: warm turkishairlines.com once per run (seeds PerimeterX + cookies),
+    # Browser transport: warm the award-booking page once per run (seeds PerimeterX + cookies),
     # then in-page fetch the availability API. Headful under xvfb — PX scores headless harshly.
-    warm_url = "https://www.turkishairlines.com/en-us/"
+    # NB: warm on the booking page, NOT the homepage — the homepage's persistent connections hang
+    # nodriver's navigation (proven 2026-06-16); the booking page loads to readyState=complete.
+    warm_url = "https://www.turkishairlines.com/en-us/miles-and-smiles/book-award-tickets/"
     headless = False
-    nav_wait_s = 10.0  # let the PerimeterX sensor run + settle before the first fetch
+    nav_wait_s = 12.0  # let the PerimeterX sensor run + settle before the first fetch
+
+    # On the Azure IP, PerimeterX challenges the availability call with an HTTP 428 crypto
+    # challenge (``sec-cp-challenge``); PX's own JS solves it in the background within a few
+    # seconds, after which a retry returns data. We retry up to this many times, waiting between.
+    _px_retries = 4
+    _px_wait_s = 10.0
 
     # Conservative cadence (mirrors Delta): light window, gentle pacing.
     min_delay_s = 8.0
@@ -114,11 +123,12 @@ class TurkishScraper(BrowserScraper):
             "savedDate": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
 
-    async def fetch_raw(self, origin: str, dest: str, travel_date: date) -> dict:
-        """One in-page availability POST per cabin in the warmed session. The session headers are
-        client-generated UUIDs (accepted as-is); accept/content-type are added by _page_fetch."""
-        out: dict[str, dict] = {}
-        for cabin_api, cabin in _CABINS:
+    async def _fetch_availability(self, body: dict) -> dict:
+        """One availability POST, retrying through PerimeterX 428 crypto-challenges (PX auto-solves
+        in the background, so a short wait + retry returns data). Fresh UUID session headers per
+        attempt; accept/content-type are added by _page_fetch."""
+        resp: dict = {}
+        for attempt in range(self._px_retries + 1):
             headers = {
                 "Accept-Language": "en",
                 "X-clientId": str(uuid.uuid4()),
@@ -127,8 +137,19 @@ class TurkishScraper(BrowserScraper):
                 "X-platform": "WEB",
                 "X-conversationId": str(uuid.uuid4()),
             }
+            resp = await self._page_fetch(_API_URL, body, headers)
+            if not (isinstance(resp, dict) and "sec-cp-challenge" in resp):
+                return resp  # got the API response (data or empty) — not a PX challenge
+            logger.info("[TK] PerimeterX 428 challenge (attempt %d) — waiting for solve", attempt + 1)
+            await asyncio.sleep(self._px_wait_s)
+        return resp  # still challenged after retries — soft-empty
+
+    async def fetch_raw(self, origin: str, dest: str, travel_date: date) -> dict:
+        """One in-page availability POST per cabin (Economy, Business) in the warmed session."""
+        out: dict[str, dict] = {}
+        for cabin_api, cabin in _CABINS:
             body = self._build_body(origin, dest, travel_date, cabin_api)
-            out[cabin] = await self._page_fetch(_API_URL, body, headers)
+            out[cabin] = await self._fetch_availability(body)
         return out
 
     def normalize(
