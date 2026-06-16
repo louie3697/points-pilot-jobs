@@ -211,6 +211,34 @@ async def _kill_overlays(tab):
         print(f"[NOTIF] err {str(e)[:60]}", flush=True)
 
 
+async def _real_click(tab, find_expr, label, is_fn=False):
+    """Find an element via a JS expression, scroll it into view, and dispatch a REAL CDP mouse
+    click at its center (synthetic .click() often won't open date pickers / submit redibe-style
+    widgets)."""
+    js = (
+        "(()=>{const e=(" + find_expr + ");if(!e||!e.getBoundingClientRect)return 'no-el';"
+        "e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();"
+        "return JSON.stringify({x:r.x+r.width/2,y:r.y+r.height/2,w:r.width});})()"
+    )
+    try:
+        rect = await tab.evaluate(js)
+        if not isinstance(rect, str) or not rect.startswith("{"):
+            print(f"[CLICK {label}] {rect}", flush=True)
+            return
+        p = json.loads(rect)
+        if p.get("w", 0) <= 0:
+            print(f"[CLICK {label}] zero-size/offscreen", flush=True)
+            return
+        x, y = float(p["x"]), float(p["y"])
+        await tab.send(uc.cdp.input_.dispatch_mouse_event(
+            type_="mousePressed", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+        await tab.send(uc.cdp.input_.dispatch_mouse_event(
+            type_="mouseReleased", x=x, y=y, button=uc.cdp.input_.MouseButton.LEFT, click_count=1))
+        print(f"[CLICK {label}] real click ({x:.0f},{y:.0f})", flush=True)
+    except Exception as e:
+        print(f"[CLICK {label}] err {str(e)[:70]}", flush=True)
+
+
 async def _av_state(tab, stage):
     """Dump visible fields (label+value) + candidate date/search buttons for the AF widget."""
     js = (
@@ -309,16 +337,41 @@ async def drive_avianca(tab):
     await fill_airport(tab, ["destination", "to", "going to", "flying to", "where to", "select destination"],
                        DEST_CITY, DEST_CODE)
     await _av_state(tab, "after-airports")
-    await click_field(tab, "departure", "depart", "date", "when", "outbound", "leaving", "select date")
-    await tab.sleep(1.5)
-    await click_exact(tab, FUTURE_DAY, allow_nav=True)
+    # date: open the Departure field with a REAL CDP click (synthetic clicks often don't open the
+    # picker), dump the calendar, then real-click a future day cell.
+    await _real_click(tab,
+        "[...document.querySelectorAll('input,[role=button],[role=combobox],button,div')]"
+        ".find(e=>e.offsetParent&&/departure|depart|select date|when|outbound/i.test"
+        "((e.getAttribute('aria-label')||'')+(e.placeholder||'')+(e.textContent||'').slice(0,30)))",
+        "departure-field")
+    await tab.sleep(2)
+    cal = await tab.evaluate(
+        "(()=>{const c=[...document.querySelectorAll('[class*=calendar],[class*=datepicker],[role=grid],[class*=month]')].find(e=>e.offsetParent);"
+        "return c?c.outerHTML.slice(0,500):'no-calendar';})()"
+    )
+    print(f"[CALENDAR] {str(cal)[:500]}", flush=True)
+    await _real_click(tab,
+        "(()=>{const cells=[...document.querySelectorAll('td,[role=gridcell],[class*=day],button,span,div')]"
+        ".filter(e=>e.offsetParent&&/^\\s*\\d{1,2}\\s*$/.test(e.textContent||'')"
+        "&&!/disabled|past|--disabled/i.test((e.className||'')+(e.getAttribute('aria-disabled')||''))"
+        "&&e.getAttribute('aria-disabled')!=='true');"
+        "return cells.find(e=>e.textContent.trim()==='" + FUTURE_DAY + "')||cells.find(e=>+e.textContent.trim()>=22)||cells[cells.length-1];})()",
+        "day-cell", is_fn=True)
     await tab.sleep(1)
     await click_exact(tab, "confirm", "ok", "done", "apply", "select", "accept")
     await _av_state(tab, "after-date")
-    await click_exact(tab, "search", "search flights", "find flights", "show flights", "search flight")
-    await tab.sleep(12)
-    await click_exact(tab, "search", "search flights", "find flights", "continue")
-    await tab.sleep(24)  # availability render / API
+    # search (the LifeMiles CTA is "Smart Search")
+    await _real_click(tab,
+        "[...document.querySelectorAll('button,[role=button],input[type=submit]')]"
+        ".find(e=>e.offsetParent&&/smart search|search flights|^\\s*search/i.test"
+        "((e.textContent||'')+(e.getAttribute('aria-label')||'')+(e.value||'')))",
+        "search-btn")
+    await tab.sleep(26)  # availability render / API
+    # detect login-gating vs results
+    where = await tab.evaluate(
+        "JSON.stringify({url:location.href.slice(0,80),sso:/sso\\.lifemiles|openid-connect|\\/auth\\/|login/i.test(location.href)})"
+    )
+    print(f"[AFTER SEARCH] {where}", flush=True)
     await diag(tab, "03results")
 
 # --------------------------------------------------------------- post-processing
