@@ -1,34 +1,34 @@
-"""Standalone Delta browser scrape for the points-pilot-jobs GitHub Actions runner.
+"""Standalone Delta SkyMiles award browser scrape for the points-pilot-jobs runner.
 
-GitHub's Azure runner IPs clear Delta's Akamai edge block (HTTP 200) where Fly's IP gets 444,
-so the nodriver browser scrape runs here. The packages under scrapers/ config/ db/ pipeline/
-are vendored from points-pilot-scrapers (see VENDORED_DELTA.md) so this repo is self-contained —
-no cross-repo checkout / PAT needed. (scrapers/browser.py + scrapers/delta.py are canonical here;
-the rest are copies of the scraper repo's shared modules.)
+Delta's award site is Akamai-walled to Fly/httpx (HTTP 444), so the nodriver browser scrape runs
+here on GitHub's Azure runner IPs (which clear Akamai). Scrapes popular Delta hub routes over a
+near-term date window via one warmed Chrome session (in-page availability fetch — see
+``scrapers/delta.py``), normalizes, and upserts into MotherDuck ``flights``, then exits. Suitable
+for a manual workflow_dispatch or a cron. Tunable via env: DELTA_SCRAPE_DAYS (default 5);
+single-route on-demand mode via DELTA_ROUTE_ORIGIN/DEST/DATES; cron sharding via DELTA_SHARDS /
+DELTA_SHARD_INDEX (Delta's ~27-leg Akamai ceiling → the cron shards across parallel runner IPs).
 
-One-shot: scrapes the most-popular Delta routes (both directions) over a near-term date window
-via one warmed Chrome session, normalizes, and upserts into MotherDuck `flights`, then exits.
-Suitable for a manual workflow_dispatch or a cron. Tunable via env: DELTA_SCRAPE_DAYS (default 5).
+The run plan + scrape loop + metric + heartbeat are shared — see ``browser_scrape_common.py``.
 """
 
 import logging
 import os
 import sys
 import time
-import urllib.request
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
+
+import browser_scrape_common as common
 
 DELTA_HEARTBEAT_URL = os.getenv("DELTA_HEARTBEAT_URL", "")  # optional GH-Actions run heartbeat
-
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stdout,
 )
 logger = logging.getLogger("delta_browser_scrape")
 
-# Most-popular Delta routes (ATL megahub + transcons + MSP/DTW/SLC hubs); both directions scraped.
 DELTA_ROUTES: list[tuple[str, str]] = [
     # existing ATL megahub + transcons
     ("ATL", "LAX"),
@@ -41,7 +41,7 @@ DELTA_ROUTES: list[tuple[str, str]] = [
     ("ATL", "BOS"),
     ("LAX", "SEA"),
     ("ATL", "DFW"),
-    # new: MSP hub (serves the 0-result demand from the search logs)
+    # MSP hub (serves the 0-result demand from the search logs)
     ("MSP", "JFK"),
     ("MSP", "SEA"),
     ("MSP", "HNL"),
@@ -52,7 +52,7 @@ DELTA_ROUTES: list[tuple[str, str]] = [
     ("MSP", "LAS"),
     ("MSP", "DEN"),
     ("MSP", "BOS"),
-    # new: DTW + SLC hubs
+    # DTW + SLC hubs
     ("DTW", "ATL"),
     ("DTW", "LAX"),
     ("DTW", "MCO"),
@@ -67,103 +67,22 @@ ROUTE_ORIGIN = os.getenv("DELTA_ROUTE_ORIGIN", "").strip()
 ROUTE_DEST = os.getenv("DELTA_ROUTE_DEST", "").strip()
 ROUTE_DATES = os.getenv("DELTA_ROUTE_DATES", "").strip()
 
-# Cron sharding: split DELTA_ROUTES across N parallel runs (the GH Actions matrix sets these),
-# each on its own runner IP, so a single run stays under Delta's per-session Akamai (444)
-# ceiling (~13 pairs / ~27 directed legs before the WAF blocks mid-run). Defaults to a single
-# unsharded run. Single-route on-demand mode ignores sharding (only shard 0 does the work).
+# Cron sharding: split DELTA_ROUTES across N parallel runs on separate runner IPs (the GH Actions
+# matrix sets these) so the per-run leg count stays under Delta's Akamai ceiling.
 SHARDS = max(1, int(os.getenv("DELTA_SHARDS", "1")))
 SHARD_INDEX = int(os.getenv("DELTA_SHARD_INDEX", "0"))
 
 
-def _parse_dates_csv(csv: str) -> list[date]:
-    """Parse a comma-separated list of ISO YYYY-MM-DD dates, dropping blanks/invalid ones."""
-    out: list[date] = []
-    for tok in csv.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        try:
-            out.append(date.fromisoformat(tok))
-        except ValueError:
-            logger.warning("ignoring invalid date %r in DELTA_ROUTE_DATES", tok)
-    return out
+def _parse_dates_csv(csv: str):  # re-exported for tests
+    return common.parse_dates_csv(csv, logger)
 
 
-def _build_plan(
-    route_origin: str,
-    route_dest: str,
-    route_dates_csv: str,
-    scrape_days: int,
-    today: date,
-    shard_index: int = 0,
-    shards: int = 1,
-) -> tuple[list[tuple[str, str]], list[date]]:
-    """Return (pairs, dates) for this run.
-
-    Single-route mode (origin AND dest provided): just that route in the requested
-    direction, over the supplied dates (or the near-term window if none given). Sharding
-    does not apply — only shard 0 returns the route; other shards return no work so a matrix
-    dispatch never scrapes the same on-demand route twice.
-    Cron mode (no route): every popular route in both directions over the window, restricted
-    to this shard's stride ``DELTA_ROUTES[shard_index::shards]`` so N parallel runs split the
-    list across separate runner IPs (keeping each run under Delta's per-session Akamai ceiling).
-    A partial route (only one of origin/dest) is treated as cron mode.
-    """
-    if route_origin and route_dest:
-        if shard_index != 0:
-            return [], []
-        pairs = [(route_origin.upper(), route_dest.upper())]
-        dates = _parse_dates_csv(route_dates_csv)
-        if not dates:
-            dates = [today + timedelta(days=i) for i in range(scrape_days)]
-        return pairs, dates
-
-    if bool(route_origin) != bool(route_dest):
-        logger.warning(
-            "partial route (origin=%r dest=%r) — ignoring and running cron mode",
-            route_origin,
-            route_dest,
-        )
-
-    pairs = []
-    for origin, dest in DELTA_ROUTES[shard_index::shards]:
-        pairs.append((origin, dest))
-        pairs.append((dest, origin))
-    dates = [today + timedelta(days=i) for i in range(scrape_days)]
-    return pairs, dates
-
-
-def _ping_heartbeat() -> None:
-    """Ping the Better Stack heartbeat so a missed daily Delta run raises an alert.
-    No-op unless DELTA_HEARTBEAT_URL is set."""
-    if not DELTA_HEARTBEAT_URL:
-        return
-    try:
-        urllib.request.urlopen(DELTA_HEARTBEAT_URL, timeout=10).close()
-    except Exception as exc:  # noqa: BLE001 — monitoring must never break the run
-        logger.warning("heartbeat ping failed: %s", exc)
-
-
-def _delta_freshness() -> dict:
-    """Snapshot how many / how fresh the Delta flight rows are (parity with the award
-    scraper's _data_freshness). Best-effort — never breaks a run."""
-    try:
-        from db.connection import get_connection
-
-        total, newest = (
-            get_connection()
-            .execute("SELECT count(*), max(scraped_at_utc) FROM flights WHERE source = 'delta'")
-            .fetchone()
-        )
-        age_h = None
-        if newest is not None:
-            if newest.tzinfo is None:
-                newest = newest.replace(tzinfo=timezone.utc)
-            age_h = round((datetime.now(timezone.utc) - newest).total_seconds() / 3600, 1)
-        return {"delta_rows": int(total or 0), "delta_newest_age_h": age_h}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("freshness snapshot failed: %s", exc)
-        return {}
+def _build_plan(route_origin, route_dest, route_dates_csv, scrape_days, today,
+                shard_index=0, shards=1):  # re-exported for tests
+    return common.build_plan(
+        DELTA_ROUTES, route_origin, route_dest, route_dates_csv, scrape_days, today,
+        shard_index, shards, logger,
+    )
 
 
 def main() -> None:
@@ -173,12 +92,8 @@ def main() -> None:
         logger.critical("Configuration error: %s", exc)
         sys.exit(1)
 
-    from db.connection import close_connection
-    from db.queries import upsert_flights
     from db.schema import migrate
-    from pipeline.normalizer import filter_valid, stamp_expiry
-    from pipeline.obs import install_log_shipping, ship_metric
-    from scrapers.base import ScraperBlockedError
+    from pipeline.obs import install_log_shipping
     from scrapers.delta import DeltaScraper
 
     install_log_shipping("point-pilot-delta")  # ship WARNING+ logs to Better Stack
@@ -195,78 +110,21 @@ def main() -> None:
     else:
         logger.info(
             "Cron mode (shard %d/%d): %d routes × %d dates",
-            SHARD_INDEX,
-            SHARDS,
-            len(pairs),
-            len(dates),
+            SHARD_INDEX, SHARDS, len(pairs), len(dates),
         )
 
-    scraper = DeltaScraper()
-    started = time.monotonic()
-    total = 0
-    error_count = 0
-    routes_scraped = 0
-    blocked = False
-    try:
-        for origin, dest in pairs:
-            if blocked:
-                break
-            route_recs = 0
-            for travel in dates:
-                try:
-                    recs = scraper.scrape(origin, dest, travel)
-                except ScraperBlockedError as exc:
-                    logger.warning("Akamai blocked (%s) — aborting run (rows so far persist)", exc)
-                    blocked = True
-                    break
-                except Exception as exc:  # noqa: BLE001 — one route/date must not sink the run
-                    logger.error("Error scraping %s→%s %s: %s", origin, dest, travel, exc)
-                    error_count += 1
-                    continue
-                stamped = stamp_expiry(filter_valid(recs), PriorityTier.MED)
-                if stamped:
-                    upsert_flights(stamped)
-                    route_recs += len(stamped)
-                    total += len(stamped)
-            routes_scraped += 1
-            logger.info("%s→%s: %d records", origin, dest, route_recs)
-    finally:
-        scraper.close()
-        close_connection()
-
-    duration_s = round(time.monotonic() - started, 1)
-    ship_metric(
-        {
-            "event": "scrape_run",
-            "service": "point-pilot-delta",
-            "airline": "DL",
-            "due_routes": len(pairs),
-            "routes_scraped": routes_scraped,
-            "records": total,
-            "errors": error_count,
-            "duration_s": duration_s,
-            "blocked": blocked,
-            **_delta_freshness(),
-        }
-    )
-    _ping_heartbeat()
-    logger.info(
-        "=== done — %d Delta records upserted (routes=%d errors=%d blocked=%s) in %ss ===",
-        total,
-        routes_scraped,
-        error_count,
-        blocked,
-        duration_s,
+    common.run_scrape(
+        DeltaScraper(), pairs, dates,
+        source="delta", service="point-pilot-delta", airline="DL",
+        heartbeat_url=DELTA_HEARTBEAT_URL, logger=logger,
     )
 
 
 if __name__ == "__main__":
     main()
-    # nodriver leaves a pending asyncio task (Connection.aclose) after browser teardown
-    # that keeps the interpreter alive, so the process never exits on its own and the GitHub
-    # Actions step hangs until its 75-min timeout cancels it — every run, ~74 min after the
-    # ~50s scrape actually finishes (confirmed in the 2026-06-08 run logs). main() has already
-    # scraped, upserted, shipped its metric, and pinged the heartbeat by this point, so give
-    # the best-effort metric POST a moment to flush, then hard-exit past the stuck task.
+    # nodriver leaves a pending asyncio task (Connection.aclose) after browser teardown that keeps
+    # the interpreter alive, so the process never exits on its own and the GitHub Actions step hangs
+    # until its timeout. main() has already scraped, upserted, shipped its metric, and pinged the
+    # heartbeat by this point, so flush briefly then hard-exit.
     time.sleep(3)
     os._exit(0)

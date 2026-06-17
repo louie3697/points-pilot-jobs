@@ -72,7 +72,8 @@ def test_parse_tk_dt_attaches_origin_timezone():
 
 
 def test_parse_tk_dt_unmapped_airport_is_none():
-    assert _parse_tk_dt("07-07-2026 17:15", "IST") is None and _parse_tk_dt("", "JFK") is None
+    # BKK is an onward award dest not in airport_tz (IST is now mapped → Europe/Istanbul)
+    assert _parse_tk_dt("07-07-2026 17:15", "BKK") is None and _parse_tk_dt("", "JFK") is None
 
 
 def test_cabin_miles_reads_mile_total_fare():
