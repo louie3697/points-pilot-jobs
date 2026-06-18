@@ -6,7 +6,7 @@ Functions return plain Python dicts/lists so callers never touch duckdb internal
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from db.connection import get_connection
@@ -351,7 +351,9 @@ def get_due_routes(limit: int = 50, airline: str | None = None) -> list[dict[str
         f"""
         SELECT
             origin, dest, airline, priority_tier, search_count,
-            last_scraped_at_utc AS last_scraped_at, next_scrape_at_utc AS next_scrape_at
+            last_scraped_at_utc AS last_scraped_at, next_scrape_at_utc AS next_scrape_at,
+            decayed_demand, last_search_at_utc AS last_search_at, change_rate,
+            interval_h, last_cheapest
         FROM routes_queue
         WHERE {" AND ".join(filters)}
         ORDER BY
@@ -370,8 +372,79 @@ def get_due_routes(limit: int = 50, airline: str | None = None) -> list[dict[str
         "search_count",
         "last_scraped_at",
         "next_scrape_at",
+        "decayed_demand",
+        "last_search_at",
+        "change_rate",
+        "interval_h",
+        "last_cheapest",
     ]
     return [dict(zip(columns, row, strict=False)) for row in rows]
+
+
+def bump_decayed_demand(
+    origin: str, dest: str, airline: str, now: "datetime", half_life_days: float
+) -> float:
+    """Decay the route's stored demand to ``now`` and add 1 for a new search. Creates the row
+    (LOW) if absent. Returns the new decayed_demand. Read-modify-write under the single writer."""
+    from pipeline import scoring
+
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO routes_queue (origin, dest, airline, priority_tier)
+        VALUES (?, ?, ?, 'LOW')
+        ON CONFLICT (origin, dest, airline) DO NOTHING
+        """,
+        [origin, dest, airline],
+    )
+    row = conn.execute(
+        "SELECT decayed_demand, last_search_at_utc FROM routes_queue "
+        "WHERE origin=? AND dest=? AND airline=?",
+        [origin, dest, airline],
+    ).fetchone()
+    stored = row[0] if row else 0.0
+    last = row[1] if row else None
+    # DuckDB returns last_search_at_utc as a NAIVE TIMESTAMP; coerce to aware UTC so it's
+    # subtractable from the aware `now` in scoring.decay_demand (mirrors checkout_budget /
+    # queue_manager._as_utc). Without this the SECOND search of a route raises TypeError.
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    new_val = scoring.bump_demand(stored, last, now, half_life_days)
+    conn.execute(
+        "UPDATE routes_queue SET decayed_demand = ?, last_search_at_utc = ? "
+        "WHERE origin=? AND dest=? AND airline=?",
+        [new_val, now, origin, dest, airline],
+    )
+    return new_val
+
+
+def record_scrape_outcome(
+    origin: str,
+    dest: str,
+    airline: str,
+    *,
+    interval_h: float,
+    change_rate: float,
+    last_cheapest: str,
+    next_scrape_at: "datetime",
+) -> None:
+    """Persist a route's adaptive-scrape outcome: stamps last_scraped now, sets next_scrape_at
+    to the adaptive interval, and saves change_rate / interval_h / last_cheapest (JSON string).
+    Assumes the route row already exists — this bare UPDATE no-ops on a missing route (unlike
+    bump_decayed_demand, which inserts the row first)."""
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE routes_queue
+        SET last_scraped_at_utc = now(),
+            next_scrape_at_utc  = ?,
+            interval_h          = ?,
+            change_rate         = ?,
+            last_cheapest       = ?
+        WHERE origin = ? AND dest = ? AND airline = ?
+        """,
+        [next_scrape_at, interval_h, change_rate, last_cheapest, origin, dest, airline],
+    )
 
 
 def mark_route_scraped(
@@ -451,7 +524,9 @@ def get_route(origin: str, dest: str, airline: str = "alaska") -> dict[str, Any]
     row = conn.execute(
         """
         SELECT origin, dest, airline, priority_tier, search_count,
-               last_scraped_at_utc AS last_scraped_at, next_scrape_at_utc AS next_scrape_at
+               last_scraped_at_utc AS last_scraped_at, next_scrape_at_utc AS next_scrape_at,
+               decayed_demand, last_search_at_utc AS last_search_at, change_rate,
+               interval_h, last_cheapest
         FROM routes_queue
         WHERE origin = ? AND dest = ? AND airline = ?
         """,
@@ -469,6 +544,11 @@ def get_route(origin: str, dest: str, airline: str = "alaska") -> dict[str, Any]
                 "search_count",
                 "last_scraped_at",
                 "next_scrape_at",
+                "decayed_demand",
+                "last_search_at",
+                "change_rate",
+                "interval_h",
+                "last_cheapest",
             ],
             row,
             strict=False,
