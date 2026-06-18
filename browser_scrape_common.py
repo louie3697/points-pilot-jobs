@@ -75,6 +75,35 @@ def build_plan(
     return pairs, dates
 
 
+def build_queue_plan(
+    airline: str,
+    *,
+    shard_index: int,
+    shards: int,
+    max_legs: int,
+    scrape_days: int,
+    today: date,
+):
+    """(route_jobs, dates) for a cron queue-mode run.
+
+    Seeds the airline's routes (idempotent upsert of all airlines via
+    ``QueueManager.seed_from_config()``), reads the scored due-batch, takes this shard's stride
+    (``due[shard_index::shards]``) so N parallel runs cover disjoint routes, and caps it at
+    ``max_legs`` directed routes. The returned ``RouteJob``s carry the tier / interval_h /
+    change_rate / last_cheapest needed for adaptive marking in ``run_scrape``.
+    """
+    from config.settings import SCORE_FETCH_MULTIPLE
+    from pipeline.queue_manager import QueueManager
+
+    q = QueueManager(scraper=None)
+    q.seed_from_config()  # idempotent upsert of ALL airlines incl. this one
+    fetch = max(max_legs * shards, max_legs * shards * SCORE_FETCH_MULTIPLE)
+    due = q.get_due_batch(limit=fetch, airline=airline)
+    mine = due[shard_index::shards][:max_legs]
+    dates = [today + timedelta(days=i) for i in range(scrape_days)]
+    return mine, dates
+
+
 def ping_heartbeat(url: str, logger: logging.Logger) -> None:
     """Ping a Better Stack/uptime heartbeat URL (no-op if unset). Monitoring must never break it."""
     if not url:
@@ -116,11 +145,22 @@ def run_scrape(
     airline: str,
     heartbeat_url: str,
     logger: logging.Logger,
+    route_jobs=None,
 ) -> int:
-    """Run the scrape loop (every pair × date), upsert valid+stamped rows, then ship the
+    """Run the scrape loop (every route × date), upsert valid+stamped rows, then ship the
     ``scrape_run`` metric + heartbeat. Aborts the run after the scraper raises ScraperBlockedError
     (rows already upserted persist). Always tears the scraper + DB connection down. Returns the
-    total rows upserted."""
+    total rows upserted.
+
+    Two modes:
+      * **On-demand** (``route_jobs is None``): iterate ``pairs`` (``(origin, dest)`` tuples),
+        no queue marking — unchanged legacy behaviour.
+      * **Cron queue mode** (``route_jobs`` given): iterate the scored ``RouteJob``s; after each
+        route's NON-BLOCKED window scrape, mark it adaptively (change detection + AIMD cadence) so
+        stable routes back off and volatile ones stay hot. A blocked route is NEVER marked (stays
+        due). ``routes_unchanged`` (cheapest-by-cabin unchanged vs the prior scrape) is tracked and
+        added to the metric.
+    """
     from config.settings import PriorityTier
     from db.connection import close_connection
     from db.queries import upsert_flights
@@ -128,14 +168,29 @@ def run_scrape(
     from pipeline.obs import ship_metric
     from scrapers.base import ScraperBlockedError
 
+    queue_mode = route_jobs is not None
+    if queue_mode:
+        from pipeline.queue_manager import QueueManager
+        from pipeline.scoring import cheapest_by_cabin
+
+        qm = QueueManager(scraper=None)
+        iterable = list(route_jobs)
+        due_count = len(iterable)
+    else:
+        iterable = [
+            type("P", (), {"origin": o, "dest": d})() for o, d in pairs
+        ]
+        due_count = len(pairs)
+
     started = time.monotonic()
-    total = error_count = routes_scraped = 0
+    total = error_count = routes_scraped = routes_unchanged = 0
     blocked = False
     try:
-        for origin, dest in pairs:
+        for job in iterable:
             if blocked:
                 break
-            route_recs = 0
+            origin, dest = job.origin, job.dest
+            route_recs: list = []
             for travel in dates:
                 try:
                     recs = scraper.scrape(origin, dest, travel)
@@ -150,10 +205,17 @@ def run_scrape(
                 stamped = stamp_expiry(filter_valid(recs), PriorityTier.MED)
                 if stamped:
                     upsert_flights(stamped)
-                    route_recs += len(stamped)
+                    route_recs.extend(stamped)
                     total += len(stamped)
+            if blocked:
+                break  # do NOT mark — the blocked route stays due
             routes_scraped += 1
-            logger.info("%s→%s: %d records", origin, dest, route_recs)
+            if queue_mode:
+                now = datetime.now(timezone.utc)
+                changed = qm.mark_scraped(job, cheapest_by_cabin(route_recs), now)
+                if not changed:
+                    routes_unchanged += 1
+            logger.info("%s→%s: %d records", origin, dest, len(route_recs))
     finally:
         scraper.close()
         close_connection()
@@ -164,8 +226,9 @@ def run_scrape(
             "event": "scrape_run",
             "service": service,
             "airline": airline,
-            "due_routes": len(pairs),
+            "due_routes": due_count,
             "routes_scraped": routes_scraped,
+            "routes_unchanged": routes_unchanged,
             "records": total,
             "errors": error_count,
             "duration_s": duration_s,
@@ -175,7 +238,7 @@ def run_scrape(
     )
     ping_heartbeat(heartbeat_url, logger)
     logger.info(
-        "=== done — %d %s records upserted (routes=%d errors=%d blocked=%s) in %ss ===",
-        total, source, routes_scraped, error_count, blocked, duration_s,
+        "=== done — %d %s records (routes=%d unchanged=%d errors=%d blocked=%s) in %ss ===",
+        total, source, routes_scraped, routes_unchanged, error_count, blocked, duration_s,
     )
     return total
