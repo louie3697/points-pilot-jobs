@@ -30,6 +30,10 @@ noise; tests still run. CI uses Python 3.11 with `MOTHERDUCK_TOKEN=dummy`.
   class) calling **`browser_scrape_common.run_scrape()`**, which owns the run plan, scrape loop,
   `scrape_run` metric, freshness snapshot, and heartbeat. Don't duplicate that logic — extend the
   shared module.
+- `*_validate.py` — thin per-airline entrypoints (scraper factory + routes + watchdog) over
+  **`validate_common.run_validation()`** — the no-DB, dispatch-only `workflow_dispatch` check that
+  scrapes a couple of routes and prints the records. Same rule: extend the shared harness, don't
+  copy it per airline.
 - `scrapers/` — `base.py` (`FlightRecord` + `BaseScraper` + `ScraperBlockedError`), `browser.py`
   (`BrowserScraper`: spawns Chrome, warms a page, runs an in-page `fetch`/DOM-read), and one module
   per airline. `browser.py` + `config/` + `db/` + `pipeline/` are **vendored from
@@ -57,8 +61,9 @@ Turkish and Etihad were added this way. Mirror `scrapers/etihad.py` + `etihad_br
    `FlightRecord`s, **one record per (itinerary × priced cabin)** with the correct per-cabin price.
 3. **Thin entrypoint** `<airline>_browser_scrape.py` (copy etihad's): routes + env + `run_scrape()`.
    Add `tests/test_<airline>.py` (offline normalize) + `.github/workflows/<airline>-browser-scrape
-   .yml` (staggered cron) + a `<airline>_validate.py` no-DB check. Add new origin airports to
-   `config/airport_tz.py`. Update `README.md`.
+   .yml` (staggered cron) + a `<airline>_validate.py` no-DB check (a thin entrypoint over
+   `validate_common.run_validation` — scraper factory + routes + watchdog, copy etihad's). Add new
+   origin airports to `config/airport_tz.py`. Update `README.md`.
 4. **Validate on the Azure IP** (no-DB validate → real on-demand DB run → check MotherDuck rows:
    `SELECT cabin_class,count(*),min(points_cost),max(points_cost) FROM flights WHERE source='<x>'
    GROUP BY 1`; business should exceed economy on a long-haul).
