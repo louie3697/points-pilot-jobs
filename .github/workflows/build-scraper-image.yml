@@ -1,0 +1,43 @@
+name: build-scraper-image
+
+# Prebuilds the browser-scraper runner image (Chromium + xvfb + pip deps) and pushes it to
+# GHCR so the per-airline scrape workflows run inside it as a `container:` job, skipping the
+# ~80s of apt/pip startup. Code is NOT in the image (only deps) — only dependency/Dockerfile
+# changes trigger a rebuild. The scrape workflows use `:latest`, so they auto-pick-up rebuilds.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Dockerfile.scraper"
+      - "requirements.txt"
+      - ".github/workflows/build-scraper-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/louie2074/points-pilot-jobs-scraper
+          tags: |
+            type=raw,value=latest
+            type=sha
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.scraper
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
