@@ -1,19 +1,19 @@
 # point-pilot-jobs
 
 Scheduled maintenance jobs for point_pilot, run as GitHub Actions cron workflows.
-Each job is a self-contained Python script that talks to the shared MotherDuck
-database (`md:point_pilot`).
+Each job is a self-contained Python script that talks to the shared **Supabase Postgres**
+database (the `pp` schema) through the vendored **`pp_db`** data layer (`DATABASE_URL`).
 
 ## Jobs
 
 | Script | Workflow | Schedule | What it does |
 |---|---|---|---|
-| `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `transfer_bonuses` table. |
-| `transfer_partners.py` | `transfer-partners.yml` | 1st & 15th, 10:00 UTC | Scrapes bank→airline transfer partners + ratios from thriftytraveler.com and full-table snapshot-replaces the `transfer_partners` table (sole owner). |
-| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | daily 08:00 UTC + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `flights`. |
-| `southwest_browser_scrape.py` | `southwest-browser-scrape.yml` | daily 09:00 UTC + on-demand dispatch | `nodriver` browser scrape of Southwest Rapid Rewards award space (Azure runner IP mints the F5/Shape sensor) → `flights`. |
-| `turkish_browser_scrape.py` | `turkish-browser-scrape.yml` | daily 10:00 UTC + on-demand dispatch | `nodriver` browser scrape of Turkish Miles&Smiles award space, US↔IST (Azure runner IP clears the TLS-fingerprint block + PerimeterX) → `flights`. |
-| `etihad_browser_scrape.py` | `etihad-browser-scrape.yml` | daily 11:00 UTC + on-demand dispatch | `nodriver` DOM scrape of Etihad Guest award space, US↔AUH (Azure runner IP clears Akamai + Imperva ABP) → `flights`. |
+| `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `pp.transfer_bonuses` table (atomic — one transaction). |
+| `transfer_partners.py` | `transfer-partners.yml` | 1st & 15th, 10:00 UTC | Scrapes bank→airline transfer partners + ratios from thriftytraveler.com and full-table snapshot-replaces the `pp.transfer_partners` table (sole owner; atomic — one transaction). |
+| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | daily 08:00 UTC + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `pp.flights`. |
+| `southwest_browser_scrape.py` | `southwest-browser-scrape.yml` | daily 09:00 UTC + on-demand dispatch | `nodriver` browser scrape of Southwest Rapid Rewards award space (Azure runner IP mints the F5/Shape sensor) → `pp.flights`. |
+| `turkish_browser_scrape.py` | `turkish-browser-scrape.yml` | daily 10:00 UTC + on-demand dispatch | `nodriver` browser scrape of Turkish Miles&Smiles award space, US↔IST (Azure runner IP clears the TLS-fingerprint block + PerimeterX) → `pp.flights`. |
+| `etihad_browser_scrape.py` | `etihad-browser-scrape.yml` | daily 11:00 UTC + on-demand dispatch | `nodriver` DOM scrape of Etihad Guest award space, US↔AUH (Azure runner IP clears Akamai + Imperva ABP) → `pp.flights`. |
 | `turkish_validate.py` | `turkish-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Turkish scraper against a few US↔IST routes under `xvfb` on the Azure IP and prints the records. No DB write (dummy token). |
 | `etihad_validate.py` | `etihad-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Etihad scraper against a couple of US↔AUH routes under `xvfb` on the Azure IP and prints the records. No DB write (dummy token). |
 
@@ -41,7 +41,9 @@ runners on distinct IPs — used where a single shard can't cover the catalogue 
 cap (`<AIRLINE>_MAX_LEGS_PER_SHARD`, default 20): **Delta** and **Southwest** run 3 shards, **Turkish**
 2 (its 40 legs > the 20-leg cap). **Etihad** runs **single-shard** by design — its 20 directed legs
 fit one shard's cap — so its workflow intentionally has no `matrix`. The `scrapers/browser.py` base +
-`config/airport_tz.py` are vendored from `points-pilot-scrapers`.
+`config/airport_tz.py` are vendored from `points-pilot-scrapers`. Scraped rows are written to
+`pp.flights` in Supabase Postgres via the vendored `pp_db` layer (`browser_scrape_common`'s
+`upsert_flights` + its freshness-snapshot probe both go through `pp_db`).
 
 **Adding a new no-login airline** is a documented recipe — see `CLAUDE.md`. (Several bank-partner
 airlines were reconned and parked because they require login or wall the datacenter IP behind a
@@ -101,11 +103,18 @@ Optional `TRANSFER_PARTNERS_HEARTBEAT_URL` pings on a successful real run.
 
 ## Setup
 
-1. Install deps: `pip install -r requirements.txt`
-2. Export a MotherDuck token (the `duckdb` package picks it up automatically):
+1. Install deps: `pip install -r requirements.txt` (this now includes the `pp_db` Postgres stack —
+   `sqlalchemy` + `psycopg[binary]` + `asyncpg`).
+2. Export the Supabase Postgres connection string (the Supavisor transaction-pooler URL, port 6543 —
+   `pp_db.engine` reads it):
    ```bash
-   export MOTHERDUCK_TOKEN=...   # https://app.motherduck.com/settings/tokens
+   export DATABASE_URL=postgresql://user:pw@aws-1-us-west-2.pooler.supabase.com:6543/postgres
    ```
+
+`MOTHERDUCK_TOKEN` is now **rollback-only**: the old `db/` DuckDB layer is retained as the cutover
+rollback path (flip `DATABASE_URL` back out + redeploy reverts to MotherDuck) until MotherDuck is
+decommissioned. The hermetic test suite still wants `MOTHERDUCK_TOKEN=dummy` to satisfy an
+import-time settings gate; it hits no real DB.
 
 ### GitHub Actions
 
@@ -113,9 +122,9 @@ Add these as repository secrets (Settings → Secrets and variables → Actions)
 
 | Secret | Required | Purpose |
 |---|---|---|
-| `MOTHERDUCK_TOKEN` | yes | MotherDuck access (`duckdb` reads it automatically) |
+| `DATABASE_URL` | yes | Supabase Postgres connection string (Supavisor transaction pooler, port 6543) — `pp_db.engine` reads it |
+| `MOTHERDUCK_TOKEN` | rollback-only | MotherDuck access for the retained DuckDB rollback layer (`duckdb` reads it automatically); the `*-validate.yml` jobs set a dummy value for the import-time settings gate |
 | `BETTERSTACK_SOURCE_TOKEN` | no | Enables the completion metric + log shipping; reuse the scraper's source token |
-| `CLEANUP_HEARTBEAT_URL` | no | Better Stack heartbeat — a missed/failed daily cleanup then alerts |
 | `BONUSES_HEARTBEAT_URL` | no | Better Stack heartbeat for the transfer-bonuses run |
 | `TRANSFER_PARTNERS_HEARTBEAT_URL` | no | Better Stack heartbeat for the transfer-partners run |
 | `DELTA_HEARTBEAT_URL` | no | Better Stack heartbeat for the daily Delta browser scrape |

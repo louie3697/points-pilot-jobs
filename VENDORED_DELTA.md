@@ -6,9 +6,15 @@ Akamai / Imperva / mints the F5/Shape sensor where Fly's IP gets blocked), with 
 checkout / PAT.
 
 Files: `scrapers/{base,browser,delta,southwest,turkish,etihad}.py`, `config/{settings,airport_tz}.py`,
-`db/{connection,queries,schema}.py`, `pipeline/normalizer.py`, `pipeline/obs.py`.
+`pipeline/normalizer.py`, `pipeline/obs.py`.
 Entry points: `delta_browser_scrape.py`, `southwest_browser_scrape.py`,
 `turkish_browser_scrape.py`, `etihad_browser_scrape.py`.
+
+**Data layer:** scrape rows are written to **Supabase Postgres** (`pp.flights`) through the
+vendored **`pp_db`** package (see `pp_db/VENDORED.md`) — the sync entry points use its
+`autocommit` facade. The `db/{connection,queries,schema}.py` DuckDB layer is **still vendored but
+rollback-only** (retained until MotherDuck is decommissioned post-cutover); don't write new code
+against it.
 
 `config/airport_tz.py` (copy of the scraper repo's) maps airport → IANA tz so `delta.py`
 stores tz-aware local departure/arrival times (a naive value would land in the TIMESTAMPTZ
