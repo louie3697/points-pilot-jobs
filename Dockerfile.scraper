@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Chromium + the X virtual framebuffer stack nodriver needs to run headful on a server,
+# plus git so actions/checkout uses git inside the container (not the slow REST tarball
+# fallback). Mirrors scraper/Dockerfile.browser.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium xvfb xauth fonts-liberation ca-certificates git gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Deps ONLY — application code arrives at runtime via actions/checkout, so a code change
+# never needs an image rebuild (only requirements.txt / this Dockerfile do).
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+ENV PYTHONUNBUFFERED=1
+# nodriver's find_chrome_executable picks this up.
+ENV CHROME_PATH=/usr/bin/chromium
