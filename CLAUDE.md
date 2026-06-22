@@ -6,9 +6,13 @@ Scheduled GitHub Actions jobs for point_pilot. Two kinds of job, all writing to 
 1. **Maintenance** — `transfer_bonuses.py` + `transfer_partners.py` (scrape bank/airline transfer
    data, snapshot-replace tables). (Stale-flight retention is now a Supabase pg_cron job,
    `pp-retention`, not a GH-Action — the former `cleanup_flights.py` was removed in the cutover.)
-2. **Award browser scrapers** — `delta` / `southwest` / `turkish` / `etihad` `_browser_scrape.py`:
-   `nodriver` (headful Chrome via CDP, under `xvfb`) scrapes of airlines whose sites block Fly's
-   datacenter IP but clear on GitHub's Azure runner IPs.
+2. **Award scrapers** — six airlines whose sites block Fly's datacenter IP but clear on GitHub's
+   Azure runner IPs, in two flavours:
+   - **Browser** (`delta` / `southwest` / `turkish` / `etihad` `_browser_scrape.py`): `nodriver`
+     (headful Chrome via CDP, under `xvfb`).
+   - **httpx** (`alaska_scrape.py` / `jetblue_scrape.py`): plain httpx, no browser — migrated off the
+     always-on `point-pilot-scraper` Fly box to free sharded GH-Actions crons. The API box still
+     runs each airline's on-demand inline scrape independently.
 
 Start with `README.md` for the job catalogue + schedules. This file is the working guide.
 
@@ -27,10 +31,11 @@ noise; tests still run. CI uses Python 3.11.
 
 ## Layout
 
-- `*_browser_scrape.py` — thin per-airline entrypoints (route list + `<AIRLINE>_*` env + Scraper
-  class) calling **`browser_scrape_common.run_scrape()`**, which owns the run plan, scrape loop,
-  `scrape_run` metric, freshness snapshot, and heartbeat. Don't duplicate that logic — extend the
-  shared module.
+- `*_browser_scrape.py` (browser scrapers) + `alaska_scrape.py` / `jetblue_scrape.py` (httpx
+  scrapers) — thin per-airline entrypoints (route list + `<AIRLINE>_*` env + Scraper class) calling
+  **`browser_scrape_common.run_scrape()`**, which owns the run plan, scrape loop, `scrape_run`
+  metric, freshness snapshot, and heartbeat. (The module name is historical — the two httpx
+  entrypoints reuse it too.) Don't duplicate that logic — extend the shared module.
 - `*_validate.py` — thin per-airline entrypoints (scraper factory + routes + watchdog) over
   **`validate_common.run_validation()`** — the no-DB, dispatch-only `workflow_dispatch` check that
   scrapes a couple of routes and prints the records. Same rule: extend the shared harness, don't
