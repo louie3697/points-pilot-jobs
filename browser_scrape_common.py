@@ -46,6 +46,21 @@ def parse_dates_csv(csv: str, logger: logging.Logger | None = None) -> list[date
     return out
 
 
+def dense_sparse_dates(
+    today: date, dense_days: int, sparse_step: int, max_day: int
+) -> list[date]:
+    """Dates matching the always-on scheduler's profile (``scraper/pipeline/scheduler.py``
+    ``_scrape_window``): every day for the first ``dense_days`` offsets (capped at ``max_day``),
+    then every ``sparse_step``-th day out to ``max_day`` EXCLUSIVE. ``max_day`` is the
+    scrape-days-ahead horizon (the exclusive ``range`` stop), not a final offset. Keeps AS/B6's
+    request-volume profile (and WAF exposure) the same as the proven Fly profile, rather than a
+    flat ``range(scrape_days)``."""
+    dense = min(dense_days, max_day)
+    offsets = list(range(dense))
+    offsets += list(range(dense, max_day, max(1, sparse_step)))
+    return [today + timedelta(days=n) for n in offsets]
+
+
 def build_plan(
     routes: list[tuple[str, str]],
     route_origin: str,
