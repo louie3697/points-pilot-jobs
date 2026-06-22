@@ -87,12 +87,13 @@ def build_plan(
     shards: int = 1,
     logger: logging.Logger | None = None,
 ) -> tuple[list[tuple[str, str]], list[date]]:
-    """(pairs, dates) for this run.
+    """(pairs, dates) for the single-route on-demand path.
 
     Single-route on-demand mode when both origin+dest are given (uses the CSV dates if provided,
-    else the near-term window); otherwise cron mode over this shard's stride of ``routes`` in both
-    directions. Sharding splits ``routes[shard_index::shards]`` so N parallel runs cover disjoint
-    routes (``shards=1`` = the whole list, unsharded). On-demand mode only runs on shard 0.
+    else the near-term window); only runs on shard 0 so an on-demand dispatch that spawns every
+    matrix shard doesn't scrape the route twice. Cron scheduling lives in ``build_queue_plan``
+    (the scored queue), so callers always pass ``routes=[]`` and never reach the cron path here —
+    a partial or absent route yields an empty plan.
     """
     if route_origin and route_dest:
         if shard_index != 0:
@@ -104,18 +105,11 @@ def build_plan(
 
     if bool(route_origin) != bool(route_dest) and logger:
         logger.warning(
-            "partial route (origin=%r dest=%r) — running cron mode", route_origin, route_dest
+            "partial route (origin=%r dest=%r) — no plan (cron drains the queue)",
+            route_origin, route_dest,
         )
 
-    # List-stride mode: retained only for the single-route / empty-list on-demand path. The cron
-    # list-stride scheduling it once served is superseded by build_queue_plan (the scored queue),
-    # so callers now pass routes=[] here — this loop is a no-op for them, not live cron code.
-    pairs: list[tuple[str, str]] = []
-    for origin, dest in routes[shard_index::shards]:
-        pairs.append((origin, dest))
-        pairs.append((dest, origin))
-    dates = [today + timedelta(days=i) for i in range(scrape_days)]
-    return pairs, dates
+    return [], []
 
 
 def build_queue_plan(
