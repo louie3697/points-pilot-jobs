@@ -130,8 +130,11 @@ class SouthwestScraper(BrowserScraper):
     block_threshold = 4
     refresh_interval_min = 360
     scrape_days_ahead = 21
-    dense_days = 10
-    sparse_step = 4
+    # 90d horizon via dense/sparse, but leaner than Delta to respect Southwest's F5/Shape
+    # per-session ceiling + the 150-min job timeout: 7 every-day near dates + sparse-to-30
+    # + coarse-to-90 → 20 dates/route (vs 14 every-day before; +43%, well under a naive 10/4=24).
+    dense_days = 7
+    sparse_step = 6
     max_routes_per_run = 12
 
     def __init__(self) -> None:

@@ -63,16 +63,25 @@ def _run_cron(shard_index: int, shards: int) -> None:
     """Drain this shard's slice of the scored queue (seed → due-batch → stride → cap)."""
     from scrapers.southwest import SouthwestScraper
 
-    route_jobs, dates = common.build_queue_plan(
+    scraper = SouthwestScraper()
+    route_jobs, _flat = common.build_queue_plan(
         "southwest", shard_index=shard_index, shards=shards,
         max_legs=MAX_LEGS_PER_SHARD, scrape_days=SCRAPE_DAYS, today=date.today(),
     )
+    # Reach the SCRAPE_DAYS horizon (90) with a bounded dense-near + sparse/coarse-tail window
+    # instead of build_queue_plan's every-day dates — mirrors alaska_scrape.py. Southwest's
+    # dense_days/sparse_step are tuned leaner than Delta's (~20 dates vs 14 every-day before)
+    # to respect its F5/Shape per-session ceiling and the 150-min job timeout.
+    dates = common.dense_sparse_dates(
+        date.today(), scraper.dense_days, scraper.sparse_step, SCRAPE_DAYS
+    )
     logger.info(
-        "Cron queue mode (shard %d/%d): %d due routes × %d dates",
+        "Cron queue mode (shard %d/%d): %d due routes × %d dates (max offset %dd)",
         shard_index, shards, len(route_jobs), len(dates),
+        (max(dates) - date.today()).days if dates else 0,
     )
     common.run_scrape(
-        SouthwestScraper(), [], dates,
+        scraper, [], dates,
         source="southwest", service="point-pilot-southwest", airline="WN",
         heartbeat_url=SOUTHWEST_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )

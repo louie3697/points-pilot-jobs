@@ -3,6 +3,13 @@ from datetime import date
 from delta_browser_scrape import _build_plan, _parse_dates_csv
 
 
+class _StubScraper:
+    """Stand-in for DeltaScraper carrying the dense/sparse knobs _run_cron reads off it."""
+
+    dense_days = 14
+    sparse_step = 4
+
+
 def test_parse_dates_csv_valid():
     assert _parse_dates_csv("2026-06-20,2026-06-21") == [date(2026, 6, 20), date(2026, 6, 21)]
 
@@ -51,10 +58,50 @@ def test_delta_cron_uses_queue(monkeypatch):
 
     monkeypatch.setattr(ep.common, "build_queue_plan", fake_build_queue_plan)
     monkeypatch.setattr(ep.common, "run_scrape", lambda *a, **k: 0)
-    monkeypatch.setattr("scrapers.delta.DeltaScraper", lambda *a, **k: object())
+    monkeypatch.setattr("scrapers.delta.DeltaScraper", _StubScraper)
 
     ep._run_cron(shard_index=0, shards=3)
     assert calls["airline"] == "delta"
     assert calls["max_legs"] == ep.MAX_LEGS_PER_SHARD
     assert calls["shard_index"] == 0
     assert calls["shards"] == 3
+
+
+class _FixedDate:
+    """date stand-in whose .today() is pinned; the entrypoint only calls date.today()."""
+
+    def __init__(self, pinned):
+        self._pinned = pinned
+
+    def today(self):
+        return self._pinned
+
+
+def test_delta_cron_uses_dense_sparse_horizon(monkeypatch):
+    """The cron path regenerates dates via dense_sparse over the 90d window (NOT
+    build_queue_plan's every-day list): bounded count (<= the prior 30 every-day Delta dates),
+    dense near-term, reaching ~90 days out."""
+    import delta_browser_scrape as ep
+
+    captured = {}
+    monkeypatch.setattr(
+        ep.common, "build_queue_plan", lambda *a, **k: (["JOB"], ["IGNORED_DATE"])
+    )
+    monkeypatch.setattr(
+        ep.common, "run_scrape",
+        lambda scraper, pairs, dates, **kw: captured.update(dates=dates) or 0,
+    )
+    monkeypatch.setattr("scrapers.delta.DeltaScraper", _StubScraper)
+
+    today = date(2026, 6, 25)
+    monkeypatch.setattr(ep, "date", _FixedDate(today))
+    monkeypatch.setattr(ep, "SCRAPE_DAYS", 90)  # the workflow sets DELTA_SCRAPE_DAYS=90
+
+    ep._run_cron(shard_index=0, shards=1)
+
+    dates = captured["dates"]
+    offsets = sorted((d - today).days for d in dates)
+    assert dates != ["IGNORED_DATE"]  # regenerated, not the queue's flat every-day list
+    assert offsets[:5] == [0, 1, 2, 3, 4]  # dense near-term, every day
+    assert 85 <= offsets[-1] < 90  # reaches the ~90d horizon (exclusive upper bound)
+    assert len(dates) <= 30  # bounded under the prior 30 every-day Delta dates

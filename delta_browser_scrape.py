@@ -64,16 +64,25 @@ def _run_cron(shard_index: int, shards: int) -> None:
     """Drain this shard's slice of the scored queue (seed → due-batch → stride → cap)."""
     from scrapers.delta import DeltaScraper
 
-    route_jobs, dates = common.build_queue_plan(
+    scraper = DeltaScraper()
+    route_jobs, _flat = common.build_queue_plan(
         "delta", shard_index=shard_index, shards=shards,
         max_legs=MAX_LEGS_PER_SHARD, scrape_days=SCRAPE_DAYS, today=date.today(),
     )
+    # Reach the SCRAPE_DAYS horizon (90) with a bounded dense-near + sparse/coarse-tail window
+    # instead of build_queue_plan's every-day dates — mirrors alaska_scrape.py. With the
+    # scraper's dense_days/sparse_step this is ~27 dates (< the prior 30 every-day), so the
+    # per-shard leg×date volume stays under Delta's Akamai ceiling while covering 60-90d out.
+    dates = common.dense_sparse_dates(
+        date.today(), scraper.dense_days, scraper.sparse_step, SCRAPE_DAYS
+    )
     logger.info(
-        "Cron queue mode (shard %d/%d): %d due routes × %d dates",
+        "Cron queue mode (shard %d/%d): %d due routes × %d dates (max offset %dd)",
         shard_index, shards, len(route_jobs), len(dates),
+        (max(dates) - date.today()).days if dates else 0,
     )
     common.run_scrape(
-        DeltaScraper(), [], dates,
+        scraper, [], dates,
         source="delta", service="point-pilot-delta", airline="DL",
         heartbeat_url=DELTA_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )
