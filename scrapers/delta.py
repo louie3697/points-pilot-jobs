@@ -184,7 +184,9 @@ class DeltaScraper(BrowserScraper):
     block_threshold = 4
     refresh_interval_min = 360  # 6 hours
     scrape_days_ahead = 21
-    dense_days = 10
+    # 90d horizon via dense/sparse: 14 every-day near dates + sparse-to-30 + coarse-to-90
+    # → 27 dates/route (< the prior 30 every-day dates), so strictly under Delta's Akamai ceiling.
+    dense_days = 14
     sparse_step = 4
     max_routes_per_run = 12
 
