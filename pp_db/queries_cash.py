@@ -18,13 +18,28 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Connection, bindparam, text
+from sqlalchemy import Connection, bindparam, func, or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from pp_db.models import CashCoverage, CashFare
 
 if TYPE_CHECKING:
     from scrapers.base import CashFareRecord
+
+
+def _conditional_update_where(excluded):
+    """ON CONFLICT guard shared by both cash upserts.
+
+    Only update when a material column (cash_price/currency/source) actually changed —
+    NULL-safe via ``IS DISTINCT FROM`` — OR the existing row has already expired (so its TTL
+    stamp still refreshes once per window). A still-fresh, unchanged row is left untouched.
+    """
+    return or_(
+        CashFare.cash_price.is_distinct_from(excluded.cash_price),
+        CashFare.currency.is_distinct_from(excluded.currency),
+        CashFare.source.is_distinct_from(excluded.source),
+        CashFare.expires_at_utc <= func.now(),
+    )
 
 
 def upsert_cash_fare(
@@ -75,6 +90,7 @@ def upsert_cash_fare(
             "scraped_at_utc": stmt.excluded.scraped_at_utc,
             "expires_at_utc": stmt.excluded.expires_at_utc,
         },
+        where=_conditional_update_where(stmt.excluded),
     )
     conn.execute(stmt)
 
@@ -120,6 +136,7 @@ def upsert_cash_fares(conn: Connection, records: list[CashFareRecord]) -> int:
             "scraped_at_utc": stmt.excluded.scraped_at_utc,
             "expires_at_utc": stmt.excluded.expires_at_utc,
         },
+        where=_conditional_update_where(stmt.excluded),
     )
     conn.execute(stmt, rows)
     return len(rows)

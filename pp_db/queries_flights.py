@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from sqlalchemy import Connection, func, select, text
+from sqlalchemy import Connection, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from pp_db.models import Flight
@@ -53,6 +53,13 @@ _UPDATE_COLS = (
     "next_day_arrival",
     "mixed_cabin",
 )
+
+# Freshness stamps — refreshed on every *real* update (they stay in ``_UPDATE_COLS``'s SET) but
+# excluded from the change-detection set below: re-stamping is the wasted write we want to skip.
+_STAMP_COLS = ("scraped_at_utc", "expires_at_utc")
+# Material (fare/availability/timing) columns. A conflict only updates when one of these actually
+# changed (or the row already expired). Derived from ``_UPDATE_COLS`` so the two can't drift.
+_MATERIAL_COLS = tuple(c for c in _UPDATE_COLS if c not in _STAMP_COLS)
 
 
 def upsert_flights(conn: Connection, records: list[FlightRecord]) -> int:
@@ -107,6 +114,16 @@ def upsert_flights(conn: Connection, records: list[FlightRecord]) -> int:
             Flight.raw_flight_number,
         ],
         set_={col: getattr(stmt.excluded, col) for col in _UPDATE_COLS},
+        # Skip no-op rewrites: only update when a material column actually changed (NULL-safe via
+        # IS DISTINCT FROM) OR the existing row has already expired (so its TTL/coverage stamp still
+        # refreshes exactly once per window). A still-fresh, unchanged row is left untouched.
+        where=or_(
+            *[
+                getattr(Flight, c).is_distinct_from(getattr(stmt.excluded, c))
+                for c in _MATERIAL_COLS
+            ],
+            Flight.expires_at_utc <= func.now(),
+        ),
     )
     conn.execute(stmt, rows)
     return len(rows)
