@@ -138,6 +138,9 @@ ALASKA_MED_ROUTES: list[tuple[str, str]] = [
     ("ORD", "HND"), ("JFK", "HND"), ("DFW", "HND"),                                   # JAL gateways
     ("LAX", "BNE"), ("JFK", "SYD"),                                                   # Qantas
     ("LAX", "GRU"), ("JFK", "GRU"), ("JFK", "SCL"), ("LAX", "SCL"),                   # LATAM
+    # coverage-expansion 2026-06-28 (free-tier data quality) - intra-CA pair that returned empty
+    # (LAX-SFO was covered but SFO-LAX was unseeded; both directions now seeded).
+    ("SFO", "LAX"),
 ]
 
 # Delta is no longer scraped from this repo — it runs as a nodriver browser scrape in the
@@ -238,6 +241,13 @@ DELTA_MED_ROUTES: list[tuple[str, str]] = [
     ("JFK", "GRU"), ("ATL", "SCL"),  # Delta South America widebody
     ("ATL", "MEX"),  # Aeroméxico/Delta
     ("ATL", "SAN"),  # domestic hub spoke (round out)
+    # coverage-expansion 2026-06-28 (free-tier data quality) - high-demand leisure/transcon O&Ds
+    # that returned EMPTY for free users (not seeded on any carrier): NYC/BOS<->Miami, FLL<->NYC,
+    # SoCal<->Florida, SFO-LAX. All real Delta nonstops off the NYC/BOS/LAX gateways.
+    *route_set("NYC", "MIA"), ("BOS", "MIA"),
+    *route_set("FLL", "NYC"),
+    ("LAX", "MIA"), ("LAX", "MCO"),
+    ("SFO", "LAX"),
 ]
 
 # Southwest Rapid Rewards — focus cities DEN/MDW/BWI/LAS/PHX/DAL/HOU/OAK/SAN.
@@ -376,6 +386,9 @@ JETBLUE_MED_ROUTES: list[tuple[str, str]] = [
     ("FLL", "LAX"), ("FLL", "SFO"), ("FLL", "SAN"),                # FLL premium transcon Mint
     ("JFK", "CDG"), ("BOS", "CDG"), ("JFK", "AMS"), ("BOS", "AMS"),  # TATL Mint
     ("EWR", "SJU"),                                                # premium Caribbean Mint
+    # coverage-expansion 2026-06-28 (free-tier data quality) - core B6 Florida markets that were
+    # missing (B6 had FLL/MCO/SJU but no Miami; adds JFK/BOS-Miami + FLL-JFK).
+    ("JFK", "MIA"), ("BOS", "MIA"), ("FLL", "JFK"),
 ]
 
 
