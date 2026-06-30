@@ -18,8 +18,8 @@ Make `jobs` the primary operational change because the scheduled scrapers now li
    JetBlue gets one additional shard per scheduled run.
    Turkish and Etihad expand from a 3-day to a 5-day near-term window.
 3. Leave Southwest unchanged because recent runs are blocked.
-4. Leave cash capacity unchanged because the Actions workflow is already the migrated path and the old Fly path needs infra shutdown/verification before more cash load is added.
-5. Update docs/comments so the current Google Flights architecture is clear: GitHub Actions is primary; Fly is legacy/bake-in and should not be scaled up.
+4. After the old Fly gflights machine is stopped, increase GitHub Actions cash capacity from 4 to 6 shards while keeping `CASH_TOP_ROUTES=600`, the 30-day horizon, and the twice-daily schedule unchanged.
+5. Update docs/comments so the current Google Flights architecture is clear: GitHub Actions is primary; Fly is stopped legacy/bake-in and should not be scaled up.
 
 ## Validation
 

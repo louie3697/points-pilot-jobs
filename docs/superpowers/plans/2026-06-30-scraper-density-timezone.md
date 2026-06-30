@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Fix the EZE timezone warning and make a small, safe scraper-density increase in GitHub Actions without touching blocked Southwest or raising cash load.
+**Goal:** Fix the EZE timezone warning, make safe award density increases, and move Google Flights cash capacity to GitHub Actions after stopping Fly gflights.
 
 **Architecture:** Keep all behavior in existing config/workflow files. Add timezone coverage to the vendored maps, guard it with a focused test, increase only clean Actions-side award density, and clarify that cash scraping is now Actions-primary.
 
@@ -12,7 +12,8 @@
 
 - Work only inside `/Users/louisn/Documents/indiehax/point_pilot/.worktrees/scraper-density-jobs`.
 - Do not change Southwest density.
-- Do not increase `CASH_TOP_ROUTES`, `CASH_SHARDS`, `CASH_SCRAPE_DAYS`, or cash workflow frequency.
+- Do not increase `CASH_TOP_ROUTES`, `CASH_SCRAPE_DAYS`, or cash workflow frequency.
+- Increase `CASH_SHARDS` only from `4` to `6`, after confirming the legacy Fly gflights machine is stopped.
 - Add `EZE` with exact timezone `America/Argentina/Buenos_Aires`.
 - Keep comments/docs consistent with Google Flights cash being Actions-primary and Fly legacy/bake-in.
 - Use TDD and commit completed work.
@@ -149,45 +150,89 @@ Expected: command exits 0.
 ### Task 3: Google Flights Migration Clarity
 
 **Files:**
+- Modify: `.github/workflows/cash-browser-scrape.yml`
 - Modify: `cash_browser_scrape.py`
 - Modify: `CLAUDE.md`
 
 **Interfaces:**
 - Produces: docs state `cash-browser-scrape.yml` is the primary scheduled Google Flights path.
-- Produces: docs state Fly gflights is legacy/bake-in and should be stopped or kept scaled down once Actions is verified.
+- Produces: docs state Fly gflights is stopped legacy/bake-in.
+- Produces: the cash workflow uses 6 shards at `CASH_TOP_ROUTES: "600"` per shard.
 
-- [ ] **Step 1: Update cash runner docstring**
+- [ ] **Step 1: Scale the cash workflow to 6 shards**
+
+Change the cash workflow matrix from:
+
+```yaml
+matrix:
+  shard: [0, 1, 2, 3]
+```
+
+to:
+
+```yaml
+matrix:
+  shard: [0, 1, 2, 3, 4, 5]
+```
+
+Change:
+
+```yaml
+CASH_SHARDS: "4"
+```
+
+to:
+
+```yaml
+CASH_SHARDS: "6"
+```
+
+Keep:
+
+```yaml
+CASH_TOP_ROUTES: "600"
+CASH_SCRAPE_DAYS: "30"
+```
+
+- [ ] **Step 2: Update cash runner docstring**
 
 In `cash_browser_scrape.py`, replace the sentence saying to leave Fly untouched for bake-in with a current note:
 
 ```python
 The GitHub Actions workflow is now the primary scheduled Google Flights cash path. The old
 ``google_flights_main.py`` Fly runner is a legacy/bake-in path only; keep it stopped or scaled
-down once Actions coverage is verified so it does not double-scrape or emit confusing metrics.
+down so it does not double-scrape or emit confusing metrics.
 ```
 
-- [ ] **Step 2: Update repo docs**
+- [ ] **Step 3: Update repo docs**
 
-In `CLAUDE.md`, make the Google Flights/cash section point to `.github/workflows/cash-browser-scrape.yml` as primary and call `point-pilot-gflights` legacy/bake-in.
+In `CLAUDE.md`, make the Google Flights/cash section point to `.github/workflows/cash-browser-scrape.yml` as primary and call `point-pilot-gflights` stopped legacy/bake-in.
 
-- [ ] **Step 3: Run checks**
+- [ ] **Step 4: Run checks**
 
 Run:
 
 ```bash
 pytest tests/test_airport_tz.py -q
 python -m compileall config pp_db pipeline scrapers -q
+python3 - <<'PY'
+from pathlib import Path
+text = Path(".github/workflows/cash-browser-scrape.yml").read_text()
+assert "shard: [0, 1, 2, 3, 4, 5]" in text
+assert 'CASH_SHARDS: "6"' in text
+assert 'CASH_TOP_ROUTES: "600"' in text
+PY
 ```
 
-Expected: both commands pass.
+Expected: all commands pass.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 Run:
 
 ```bash
 git status --short
-git add .github/workflows/jetblue-scrape.yml .github/workflows/turkish-browser-scrape.yml .github/workflows/etihad-browser-scrape.yml config/airport_tz.py pp_db/airport_tz.py tests/test_airport_tz.py config/settings.py cash_browser_scrape.py CLAUDE.md docs/superpowers/specs/2026-06-30-scraper-density-timezone-design.md docs/superpowers/plans/2026-06-30-scraper-density-timezone.md
+git add .github/workflows/jetblue-scrape.yml .github/workflows/turkish-browser-scrape.yml .github/workflows/etihad-browser-scrape.yml .github/workflows/cash-browser-scrape.yml config/airport_tz.py pp_db/airport_tz.py tests/test_airport_tz.py config/settings.py cash_browser_scrape.py CLAUDE.md docs/superpowers/specs/2026-06-30-scraper-density-timezone-design.md docs/superpowers/plans/2026-06-30-scraper-density-timezone.md
 git commit -m "chore: increase safe scraper density"
 ```
 

@@ -15,7 +15,7 @@ the SAME cash primitives as ``run_once`` — coverage → scrape → match → u
 
 The GitHub Actions workflow is now the primary scheduled Google Flights cash path. The old
 ``google_flights_main.py`` Fly runner is a legacy/bake-in path only; keep it stopped or scaled
-down once Actions coverage is verified so it does not double-scrape or emit confusing metrics.
+down so it does not double-scrape or emit confusing metrics.
 """
 
 from __future__ import annotations

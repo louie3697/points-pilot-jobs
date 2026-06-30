@@ -16,7 +16,8 @@ Scheduled GitHub Actions jobs for point_pilot. Two kinds of job, all writing to 
 3. **Google Flights cash scraper** — `.github/workflows/cash-browser-scrape.yml` is the primary
    scheduled cash-fare path now. `cash_browser_scrape.py` runs the bounded, sharded GitHub Actions
    batch; `point-pilot-gflights` / `google_flights_main.py` is legacy bake-in only and should stay
-   stopped or scaled down once Actions coverage is verified so metrics and scrape volume stay clean.
+   stopped so metrics and scrape volume stay clean. The Fly machine was stopped on 2026-06-30;
+   Actions now carries cash capacity with 6 shards at 600 units per shard.
 
 Start with `README.md` for the job catalogue + schedules. This file is the working guide.
 
