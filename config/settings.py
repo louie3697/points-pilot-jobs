@@ -181,7 +181,8 @@ CRON_MAX_LEGS_PER_SHARD: dict[str, int] = {
     # get 403'd within a few routes, ~1/3 run clean (validated 2026-06-19 — shards blocked at 3 / 5
     # routes while a third did its full cap unblocked). So the cap only bounds the CLEAN shards;
     # keep it generous (20) to maximize their coverage. The 3-shard fan-out is the real mitigation
-    # (more IP draws → better odds of a clean one). A 10 cap was tried and REDUCED coverage (18 vs 36).
+    # (more IP draws → better odds of a clean one). A 10 cap was tried and reduced coverage
+    # (18 vs 36).
     "southwest": int(_get("SOUTHWEST_MAX_LEGS_PER_SHARD", "20")),
     "turkish": int(_get("TURKISH_MAX_LEGS_PER_SHARD", "20")),
     "etihad": int(_get("ETIHAD_MAX_LEGS_PER_SHARD", "20")),
