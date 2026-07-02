@@ -3,9 +3,9 @@ name: Alaska award scrape
 on:
   workflow_dispatch:
   schedule:
-    # 3×/day, offset to :17 and clear of the 08–11 UTC award-browser block. Alaska now runs
-    # 5 shards so the 90d queue stays inside the wall-clock budget.
-    - cron: "17 1,13,19 * * *"
+    # 4x/day, offset to :17 and clear of the 08-11 UTC award-browser block. Alaska keeps
+    # 5 shards and adds a 07:17 UTC run to reduce due-route queue wait.
+    - cron: "17 1,7,13,19 * * *"
 
 permissions:
   contents: read

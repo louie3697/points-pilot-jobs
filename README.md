@@ -10,20 +10,20 @@ database (the `pp` schema) through the vendored **`pp_db`** data layer (`DATABAS
 |---|---|---|---|
 | `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `pp.transfer_bonuses` table (atomic — one transaction). |
 | `transfer_partners.py` | `transfer-partners.yml` | 1st & 15th, 10:00 UTC | Scrapes bank→airline transfer partners + ratios from thriftytraveler.com and full-table snapshot-replaces the `pp.transfer_partners` table (sole owner; atomic — one transaction). |
-| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | 2×/day (08:00, 20:00 UTC) + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `pp.flights`. Sharded 7 ways (`shard: [0, 1, 2, 3, 4, 5, 6]`). |
+| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | 3x/day (02:00, 08:00, 20:00 UTC) + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `pp.flights`. Sharded 7 ways (`shard: [0, 1, 2, 3, 4, 5, 6]`). |
 | `southwest_browser_scrape.py` | `southwest-browser-scrape.yml` | daily 09:00 UTC + on-demand dispatch | `nodriver` browser scrape of Southwest Rapid Rewards award space (Azure runner IP mints the F5/Shape sensor) → `pp.flights`. Sharded 6× (`shard: [0, 1, 2, 3, 4, 5]`). |
 | `turkish_browser_scrape.py` | `turkish-browser-scrape.yml` | daily 10:00 UTC + on-demand dispatch | `nodriver` browser scrape of Turkish Miles&Smiles award space, US↔IST (Azure runner IP clears the TLS-fingerprint block + PerimeterX) → `pp.flights`. Sharded 3× (`shard: [0, 1, 2]`). |
 | `etihad_browser_scrape.py` | `etihad-browser-scrape.yml` | daily 11:00 UTC + on-demand dispatch | `nodriver` DOM scrape of Etihad Guest award space, US↔AUH (Azure runner IP clears Akamai + Imperva ABP) → `pp.flights`. Sharded 2× (`shard: [0, 1]`). |
-| `alaska_scrape.py` | `alaska-scrape.yml` | 3×/day (01:17, 13:17, 19:17 UTC) | Plain **httpx** scrape (no browser) of Alaska Mileage Plan award space (Azure runner IP clears the Fastly WAF) → `pp.flights`. Sharded 5 ways (`shard: [0, 1, 2, 3, 4]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline Alaska scrape independently. |
+| `alaska_scrape.py` | `alaska-scrape.yml` | 4x/day (01:17, 07:17, 13:17, 19:17 UTC) | Plain **httpx** scrape (no browser) of Alaska Mileage Plan award space (Azure runner IP clears the Fastly WAF) → `pp.flights`. Sharded 5 ways (`shard: [0, 1, 2, 3, 4]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline Alaska scrape independently. |
 | `jetblue_scrape.py` | `jetblue-scrape.yml` | 3×/day (02:37, 14:37, 20:37 UTC) | Plain **httpx** scrape (no browser) of JetBlue TrueBlue award space (clean from Azure IPs) → `pp.flights`. Sharded 5 ways (`shard: [0, 1, 2, 3, 4]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline JetBlue scrape independently. |
 | `cash_browser_scrape.py` | `cash-browser-scrape.yml` | 3×/day (06:15, 14:15, 22:15 UTC) | `nodriver` browser scrape of **Google Flights cash fares** for all tracked carriers (Azure runner IP serves Google cleanly at volume) → matched to award flights → `pp.cash_fares` (powers CPP). Runs 6 shards with `CASH_TOP_ROUTES=800`; a whole route stays on one shard. The legacy `point-pilot-gflights` Fly box remains stopped so Actions owns cash capacity. |
 | `turkish_validate.py` | `turkish-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Turkish scraper against a few US↔IST routes under `xvfb` on the Azure IP and prints the records. No DB write. |
 | `etihad_validate.py` | `etihad-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Etihad scraper against a couple of US↔AUH routes under `xvfb` on the Azure IP and prints the records. No DB write. |
 
 <!-- coverage-expansion 2026-06-23 concurrency: award scrapers are staggered by UTC slot
-(Alaska 01:17/13:17/19:17 x5, JetBlue 02:37/14:37/20:37 x5, Cash 06:15/14:15/22:15 x6,
-Delta 08:00/20:00 x7, Southwest 09:00 x6, Turkish 10:00 x3, Etihad 11:00 x2). Planned peak
-overlap can reach roughly cash plus Delta (13 jobs), still under the 20-job ceiling. -->
+(Alaska 01:17/07:17/13:17/19:17 x5, JetBlue 02:37/14:37/20:37 x5, Cash 06:15/14:15/22:15 x6,
+Delta 02:00/08:00/20:00 x7, Southwest 09:00 x6, Turkish 10:00 x3, Etihad 11:00 x2). Planned peak
+overlap can reach roughly 17 jobs, still under the 20-job ceiling. -->
 
 `obs.py` is the shared Better Stack shipper used by the transfer jobs; the browser
 scrapers use the vendored `pipeline/obs.py`. `conftest.py` holds shared pytest fixtures.
