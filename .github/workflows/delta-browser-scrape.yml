@@ -5,7 +5,7 @@ name: delta-browser-scrape
 # packages are VENDORED from points-pilot-scrapers (see VENDORED_DELTA.md), so no cross-repo
 # checkout / PAT is needed. Headful Chrome under xvfb (Akamai challenges headless). Writes Delta
 # rows into Postgres `flights`. Delta now runs 7 shards across 3 scheduled slots to drain the
-# larger queue without changing cadence.
+# larger queue without changing shard count.
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +22,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 2 * * *"   # 3rd daily run adds queue-drain capacity without stacking on cash/JetBlue
+    - cron: "0 2 * * *"   # 3rd daily run adds queue-drain capacity while keeping expected overlap under the documented 20-job ceiling
     - cron: "0 8 * * *"   # daily at 08:00 UTC (clear of transfer-bonuses 09:00)
     - cron: "0 20 * * *"  # evening run halves Delta's effective TTL
 
