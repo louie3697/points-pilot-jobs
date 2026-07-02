@@ -3,8 +3,8 @@ name: Alaska award scrape
 on:
   workflow_dispatch:
   schedule:
-    # 3×/day, offset to :17 and clear of the 08–11 UTC award-browser block, to keep the
-    # 24h MED TTL fresh with margin (best-effort cron + the API on-demand backstop).
+    # 3×/day, offset to :17 and clear of the 08–11 UTC award-browser block. Alaska now runs
+    # 5 shards so the 90d queue stays inside the wall-clock budget.
     - cron: "17 1,13,19 * * *"
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,7 +37,7 @@ jobs:
           BETTERSTACK_LOGS_TOKEN: ${{ secrets.BETTERSTACK_LOGS_TOKEN }}
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           ALASKA_HEARTBEAT_URL: ${{ secrets.ALASKA_HEARTBEAT_URL }}
-          ALASKA_SHARDS: "4"
+          ALASKA_SHARDS: "5"
           ALASKA_SHARD_INDEX: ${{ matrix.shard }}
           # 3-month horizon (dense 0-14d / sparse to 30d / weekly coarse tail to 90d ≈ 29 dates).
           # Alaska carries the international partner award space Explore surfaces; httpx is cheap.

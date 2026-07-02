@@ -27,8 +27,8 @@ def test_jetblue_workflow_runs_three_times_daily():
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
     """matrix must be 0..n-1 and JETBLUE_SHARDS must equal the matrix length so the stride
-    partition (due[idx::n]) covers the whole due set. JetBlue runs >=4 shards so the expanded
-    transatlantic/Mint queue can drain inside the 60-min GitHub-Actions cap."""
+    partition (due[idx::n]) covers the whole due set. JetBlue runs 5 fresh-IP shards after the
+    July 2026 queue-drain bump."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -36,5 +36,5 @@ def test_jetblue_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["JETBLUE_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(JETBLUE_SHARDS={n})"
-    assert n >= 4, "JetBlue runs at least 4 fresh-IP shards"
+    assert n == 5, "JetBlue runs 5 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["JETBLUE_SHARD_INDEX"] == "${{ matrix.shard }}"

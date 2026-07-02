@@ -3,10 +3,9 @@ name: JetBlue award scrape
 on:
   workflow_dispatch:
   schedule:
-    # 3×/day (was 2×). The route set grew with partner/Mint business pairs (POI-20 lever #3),
-    # so a third run drains the larger queue + the never-scraped tail faster. Each run now uses
-    # a measured +33% Actions-side density bump (4 shards after clean metrics) at a different
-    # hour, still on fresh runner IPs and still clear of the 08–11 UTC award block.
+    # 3×/day. The route set grew with partner/Mint business pairs (POI-20 lever #3), so a third
+    # run drains the larger queue + the never-scraped tail faster. JetBlue now runs 5 shards at
+    # each slot, still on fresh runner IPs and still clear of the 08–11 UTC award block.
     - cron: "37 2,14,20 * * *"
 
 permissions:
@@ -23,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +38,7 @@ jobs:
           BETTERSTACK_LOGS_TOKEN: ${{ secrets.BETTERSTACK_LOGS_TOKEN }}
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           JETBLUE_HEARTBEAT_URL: ${{ secrets.JETBLUE_HEARTBEAT_URL }}
-          JETBLUE_SHARDS: "4"
+          JETBLUE_SHARDS: "5"
           JETBLUE_SHARD_INDEX: ${{ matrix.shard }}
           # 3-month horizon (dense 0-14d / sparse to 30d / weekly coarse tail to 90d ≈ 29 dates).
           JETBLUE_SCRAPE_DAYS: "90"

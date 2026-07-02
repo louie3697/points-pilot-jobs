@@ -14,8 +14,8 @@ def test_alaska_scrape_imports_and_configures():
 
 def test_alaska_workflow_shard_matrix_is_consistent():
     """matrix must be 0..n-1 and ALASKA_SHARDS must equal the matrix length so the stride
-    partition (due[idx::n]) covers the whole due set. Alaska's expanded queue now needs >=4
-    shards to keep up while each scheduled run is capped by the wall-clock budget."""
+    partition (due[idx::n]) covers the whole due set. Alaska runs 5 fresh-IP shards after the
+    July 2026 queue-drain bump."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -23,5 +23,5 @@ def test_alaska_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["ALASKA_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(ALASKA_SHARDS={n})"
-    assert n >= 4, "Alaska runs at least 4 fresh-IP shards"
+    assert n == 5, "Alaska runs 5 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["ALASKA_SHARD_INDEX"] == "${{ matrix.shard }}"
