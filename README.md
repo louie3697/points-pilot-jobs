@@ -10,20 +10,20 @@ database (the `pp` schema) through the vendored **`pp_db`** data layer (`DATABAS
 |---|---|---|---|
 | `transfer_bonuses.py` | `transfer-bonuses.yml` | 1st & 15th, 09:00 UTC | Scrapes current point-transfer bonuses from travel-on-points.com and snapshot-replaces the `pp.transfer_bonuses` table (atomic — one transaction). |
 | `transfer_partners.py` | `transfer-partners.yml` | 1st & 15th, 10:00 UTC | Scrapes bank→airline transfer partners + ratios from thriftytraveler.com and full-table snapshot-replaces the `pp.transfer_partners` table (sole owner; atomic — one transaction). |
-| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | 2×/day (08:00, 20:00 UTC) + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `pp.flights`. Sharded 5× (`shard: [0, 1, 2, 3, 4]`). |
+| `delta_browser_scrape.py` | `delta-browser-scrape.yml` | 2×/day (08:00, 20:00 UTC) + on-demand dispatch | `nodriver` browser scrape of Delta SkyMiles award space (Azure runner IP clears Akamai) → `pp.flights`. Sharded 6 ways (`shard: [0, 1, 2, 3, 4, 5]`). |
 | `southwest_browser_scrape.py` | `southwest-browser-scrape.yml` | daily 09:00 UTC + on-demand dispatch | `nodriver` browser scrape of Southwest Rapid Rewards award space (Azure runner IP mints the F5/Shape sensor) → `pp.flights`. Sharded 6× (`shard: [0, 1, 2, 3, 4, 5]`). |
 | `turkish_browser_scrape.py` | `turkish-browser-scrape.yml` | daily 10:00 UTC + on-demand dispatch | `nodriver` browser scrape of Turkish Miles&Smiles award space, US↔IST (Azure runner IP clears the TLS-fingerprint block + PerimeterX) → `pp.flights`. Sharded 3× (`shard: [0, 1, 2]`). |
 | `etihad_browser_scrape.py` | `etihad-browser-scrape.yml` | daily 11:00 UTC + on-demand dispatch | `nodriver` DOM scrape of Etihad Guest award space, US↔AUH (Azure runner IP clears Akamai + Imperva ABP) → `pp.flights`. Sharded 2× (`shard: [0, 1]`). |
-| `alaska_scrape.py` | `alaska-scrape.yml` | 3×/day (01:17, 13:17, 19:17 UTC) | Plain **httpx** scrape (no browser) of Alaska Mileage Plan award space (Azure runner IP clears the Fastly WAF) → `pp.flights`. Sharded 3× (`shard: [0, 1, 2]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline Alaska scrape independently. |
-| `jetblue_scrape.py` | `jetblue-scrape.yml` | 2×/day (02:37, 14:37 UTC) | Plain **httpx** scrape (no browser) of JetBlue TrueBlue award space (clean from Azure IPs) → `pp.flights`. Sharded 3× (`shard: [0, 1, 2]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline JetBlue scrape independently. |
-| `cash_browser_scrape.py` | `cash-browser-scrape.yml` | 2×/day (06:15, 18:15 UTC) | `nodriver` browser scrape of **Google Flights cash fares** for all tracked carriers (Azure runner IP serves Google cleanly at volume) → matched to award flights → `pp.cash_fares` (powers CPP). Sharded 4× (`shard: [0, 1, 2, 3]`); a whole route stays on one shard. Migrated off the always-on `point-pilot-gflights` Fly box; both upsert the same key, so GA can bake in parallel with Fly. |
+| `alaska_scrape.py` | `alaska-scrape.yml` | 3×/day (01:17, 13:17, 19:17 UTC) | Plain **httpx** scrape (no browser) of Alaska Mileage Plan award space (Azure runner IP clears the Fastly WAF) → `pp.flights`. Sharded 4 ways (`shard: [0, 1, 2, 3]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline Alaska scrape independently. |
+| `jetblue_scrape.py` | `jetblue-scrape.yml` | 3×/day (02:37, 14:37, 20:37 UTC) | Plain **httpx** scrape (no browser) of JetBlue TrueBlue award space (clean from Azure IPs) → `pp.flights`. Remains sharded 4 ways (`shard: [0, 1, 2, 3]`). Migrated off the always-on Fly box; the API box still runs the on-demand inline JetBlue scrape independently. |
+| `cash_browser_scrape.py` | `cash-browser-scrape.yml` | 3×/day (06:15, 14:15, 22:15 UTC) | `nodriver` browser scrape of **Google Flights cash fares** for all tracked carriers (Azure runner IP serves Google cleanly at volume) → matched to award flights → `pp.cash_fares` (powers CPP). Runs 6 shards with `CASH_TOP_ROUTES=800`; a whole route stays on one shard. The legacy `point-pilot-gflights` Fly box remains stopped so Actions owns cash capacity. |
 | `turkish_validate.py` | `turkish-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Turkish scraper against a few US↔IST routes under `xvfb` on the Azure IP and prints the records. No DB write. |
 | `etihad_validate.py` | `etihad-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Etihad scraper against a couple of US↔AUH routes under `xvfb` on the Azure IP and prints the records. No DB write. |
 
 <!-- coverage-expansion 2026-06-23 concurrency: award scrapers are staggered by UTC slot
-(Alaska 01:17/13:17/19:17 ×3, JetBlue 02:37/14:37 ×3, Cash 06:15/18:15 ×4,
-Delta 08:00/20:00 ×5, Southwest 09:00 ×6, Turkish 10:00 ×3, Etihad 11:00 ×2), so no two
-multi-shard jobs share a slot and peak concurrency is about 6, well under the 20-job ceiling. -->
+(Alaska 01:17/13:17/19:17 x4, JetBlue 02:37/14:37/20:37 x4, Cash 06:15/14:15/22:15 x6,
+Delta 08:00/20:00 x6, Southwest 09:00 x6, Turkish 10:00 x3, Etihad 11:00 x2). Planned peak
+overlap can reach roughly cash plus Delta (12 jobs), still under the 20-job ceiling. -->
 
 `obs.py` is the shared Better Stack shipper used by the transfer jobs; the browser
 scrapers use the vendored `pipeline/obs.py`. `conftest.py` holds shared pytest fixtures.
@@ -55,8 +55,8 @@ Each entrypoint accepts on-demand `workflow_dispatch` inputs (`origin`, `destina
 a single-route run, and `<AIRLINE>_SCRAPE_DAYS` / `<AIRLINE>_SHARDS` env tuning. **Sharding** (a
 GH-Actions `matrix` over `<AIRLINE>_SHARD_INDEX`) splits the directed-leg catalogue across parallel
 runners on distinct IPs — used where a single shard can't cover the catalogue under its per-IP WAF
-cap (`<AIRLINE>_MAX_LEGS_PER_SHARD`, default 20): **Southwest** runs 6 shards, **Delta** 5,
-**Alaska**, **JetBlue**, and **Turkish** 3, and **Etihad** 2. The `scrapers/browser.py` base +
+cap (`<AIRLINE>_MAX_LEGS_PER_SHARD`, default 20): **Southwest** runs 6 shards, **Delta** 6,
+**Alaska** and **JetBlue** 4, **Turkish** 3, and **Etihad** 2. The `scrapers/browser.py` base +
 `config/airport_tz.py` are vendored from
 `points-pilot-scrapers`. Scraped rows are written to `pp.flights` in Supabase Postgres via the
 vendored `pp_db` layer (`browser_scrape_common`'s `upsert_flights` + its freshness-snapshot probe

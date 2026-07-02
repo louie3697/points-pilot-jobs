@@ -12,10 +12,10 @@ Tiers:
 
 LOW routes are added dynamically via handle_user_search().
 
-Live airlines are Alaska + JetBlue. Alaska runs daily — every route is MED; HIGH is
+Live airlines are Alaska + JetBlue. Alaska runs 3x/day — every route is MED; HIGH is
 intentionally empty (the 3×/day HIGH refresh oversubscribed the shared single-IP worker).
-Alaska covers 115 pairs (US hubs ↔ domestic + partner-business intl nonstops). JetBlue
-covers 46 pairs anchored on JFK/BOS/FLL/EWR (after NYC/LA metro fan-out), incl. transcon +
+Alaska covers 137 pairs (US hubs ↔ domestic + partner-business intl nonstops). JetBlue
+covers 62 pairs anchored on JFK/BOS/FLL/EWR (after NYC/LA metro fan-out), incl. transcon +
 TATL Mint business. American (AAdvantage) was removed (Akamai-walled). Delta is scraped from
 the points-pilot-jobs repo (nodriver browser scrape), not here.
 """
@@ -141,6 +141,11 @@ ALASKA_MED_ROUTES: list[tuple[str, str]] = [
     # coverage-expansion 2026-06-28 (free-tier data quality) - intra-CA pair that returned empty
     # (LAX-SFO was covered but SFO-LAX was unseeded; both directions now seeded).
     ("SFO", "LAX"),
+    # coverage-bump 2026-07-01 - partner international routes.
+    ("JFK", "DUB"), ("BOS", "DUB"), ("ORD", "DUB"), ("IAD", "DUB"),  # Aer Lingus
+    ("SEA", "FRA"), ("PDX", "FRA"), ("SFO", "FRA"), ("LAX", "FRA"),  # Condor
+    ("SEA", "KEF"), ("PDX", "KEF"), ("JFK", "KEF"), ("BOS", "KEF"),  # Icelandair
+    ("JFK", "FCO"), ("BOS", "FCO"), ("LAX", "FCO"), ("SFO", "FCO"),  # ITA
 ]
 
 # Delta is no longer scraped from this repo — it runs as a nodriver browser scrape in the
@@ -157,7 +162,7 @@ ALASKA_MED_ROUTES: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 # Delta SkyMiles — anchored on ATL/MSP/DTW/SLC hubs + JFK/LAX/SEA/BOS gateways.
-# 62 → 89 undirected pairs (124 → 178 directed). The 2026-06-25 expansion adds
+# Now 113 undirected pairs (226 directed). The 2026-06-25 expansion adds
 # SkyTeam INTERNATIONAL WIDEBODY routes where Delta One business actually exists
 # (AMS/KLM, CDG/Air France, LHR/Virgin Atlantic, ICN/Korean, NRT/HND, GRU/SCL/MEX)
 # plus a couple of domestic spokes — this is what thickens the thin Delta-business cabin.
@@ -248,6 +253,12 @@ DELTA_MED_ROUTES: list[tuple[str, str]] = [
     *route_set("FLL", "NYC"),
     ("LAX", "MIA"), ("LAX", "MCO"),
     ("SFO", "LAX"),
+    # coverage-bump 2026-07-01 - Delta international additions.
+    ("SEA", "FCO"), ("SEA", "BCN"),
+    ("JFK", "OPO"), ("JFK", "MLA"), ("JFK", "OLB"),
+    ("BOS", "MAD"), ("BOS", "NCE"), ("BOS", "BCN"), ("BOS", "MXP"),
+    ("JFK", "CTA"),
+    ("MSP", "CPH"),
 ]
 
 # Southwest Rapid Rewards — focus cities DEN/MDW/BWI/LAS/PHX/DAL/HOU/OAK/SAN.
@@ -389,6 +400,13 @@ JETBLUE_MED_ROUTES: list[tuple[str, str]] = [
     # coverage-expansion 2026-06-28 (free-tier data quality) - core B6 Florida markets that were
     # missing (B6 had FLL/MCO/SJU but no Miami; adds JFK/BOS-Miami + FLL-JFK).
     ("JFK", "MIA"), ("BOS", "MIA"), ("FLL", "JFK"),
+    # coverage-bump 2026-07-01 - JetBlue transatlantic additions.
+    ("JFK", "DUB"), ("BOS", "DUB"),
+    ("JFK", "EDI"), ("BOS", "EDI"),
+    ("JFK", "LGW"), ("BOS", "LGW"),
+    ("JFK", "MAD"), ("BOS", "MAD"),
+    ("BOS", "BCN"),
+    ("BOS", "MXP"),
 ]
 
 
@@ -420,6 +438,11 @@ CASH_PINNED_ROUTES: list[tuple[str, str]] = [
     ("SEA", "HND"), ("SFO", "HND"), ("LAX", "HND"),
     ("LAX", "NRT"), ("SFO", "HKG"), ("LAX", "SYD"), ("LAX", "TPE"),
     ("SEA", "LHR"), ("DTW", "ICN"), ("JFK", "CDG"), ("DTW", "AMS"),
+    # coverage-bump 2026-07-01 - pin highest-value new intl routes for early CPP.
+    ("JFK", "DUB"), ("BOS", "DUB"),
+    ("SEA", "FRA"), ("SEA", "KEF"), ("JFK", "FCO"),
+    ("SEA", "FCO"), ("SEA", "BCN"), ("JFK", "OPO"),
+    ("BOS", "MAD"), ("BOS", "BCN"), ("BOS", "MXP"),
 ]
 
 
