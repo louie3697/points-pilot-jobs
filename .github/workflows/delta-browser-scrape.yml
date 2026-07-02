@@ -4,7 +4,8 @@ name: delta-browser-scrape
 # Akamai edge block — HTTP 200 — where Fly's IP gets 444). The scrapers/ config/ pp_db/ pipeline/
 # packages are VENDORED from points-pilot-scrapers (see VENDORED_DELTA.md), so no cross-repo
 # checkout / PAT is needed. Headful Chrome under xvfb (Akamai challenges headless). Writes Delta
-# rows into Postgres `flights`.
+# rows into Postgres `flights`. Delta now runs 7 shards to drain the larger queue without
+# changing cadence.
 on:
   workflow_dispatch:
     inputs:
@@ -45,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v6
       - name: Scrape Delta (headful Chrome under xvfb, Azure IP)
@@ -57,7 +58,7 @@ jobs:
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           DELTA_HEARTBEAT_URL: ${{ secrets.DELTA_HEARTBEAT_URL }}
           DELTA_SCRAPE_DAYS: "90"
-          DELTA_SHARDS: "6"
+          DELTA_SHARDS: "7"
           DELTA_SHARD_INDEX: ${{ matrix.shard }}
           DELTA_ROUTE_ORIGIN: ${{ inputs.origin }}
           DELTA_ROUTE_DEST: ${{ inputs.destination }}

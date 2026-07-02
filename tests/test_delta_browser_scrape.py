@@ -26,7 +26,7 @@ def test_delta_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["DELTA_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(DELTA_SHARDS={n})"
-    assert n >= 6, "Delta runs at least 6 fresh-IP shards"
+    assert n == 7, "Delta runs 7 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["DELTA_SHARD_INDEX"] == "${{ matrix.shard }}"
 
 
