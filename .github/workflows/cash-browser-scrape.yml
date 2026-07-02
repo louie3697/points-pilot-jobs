@@ -9,7 +9,7 @@ name: cash-browser-scrape
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 6,14,22 * * *"  # 3x/day, clear of the 08-11 UTC browser block + 20 UTC Delta
+    - cron: "15 6,14,22 * * *"  # 3x/day, clear of the 08-11 UTC browser block; peak jobs stay <20
 
 permissions:
   contents: read

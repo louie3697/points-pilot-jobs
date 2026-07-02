@@ -14,8 +14,8 @@ def test_alaska_scrape_imports_and_configures():
 
 def test_alaska_workflow_shard_matrix_is_consistent():
     """matrix must be 0..n-1 and ALASKA_SHARDS must equal the matrix length so the stride
-    partition (due[idx::n]) covers the whole due set. Alaska's 252-route queue needs >=3 shards
-    to keep up now that each scheduled run is capped by the wall-clock budget."""
+    partition (due[idx::n]) covers the whole due set. Alaska's expanded queue now needs >=4
+    shards to keep up while each scheduled run is capped by the wall-clock budget."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]

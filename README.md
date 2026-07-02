@@ -23,7 +23,7 @@ database (the `pp` schema) through the vendored **`pp_db`** data layer (`DATABAS
 <!-- coverage-expansion 2026-06-23 concurrency: award scrapers are staggered by UTC slot
 (Alaska 01:17/13:17/19:17 x4, JetBlue 02:37/14:37/20:37 x4, Cash 06:15/14:15/22:15 x6,
 Delta 08:00/20:00 x6, Southwest 09:00 x6, Turkish 10:00 x3, Etihad 11:00 x2). Planned peak
-overlap is roughly cash plus JetBlue (10 jobs), still under the 20-job ceiling. -->
+overlap can reach roughly cash plus Delta (12 jobs), still under the 20-job ceiling. -->
 
 `obs.py` is the shared Better Stack shipper used by the transfer jobs; the browser
 scrapers use the vendored `pipeline/obs.py`. `conftest.py` holds shared pytest fixtures.

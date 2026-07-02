@@ -12,10 +12,10 @@ Tiers:
 
 LOW routes are added dynamically via handle_user_search().
 
-Live airlines are Alaska + JetBlue. Alaska runs daily — every route is MED; HIGH is
+Live airlines are Alaska + JetBlue. Alaska runs 3x/day — every route is MED; HIGH is
 intentionally empty (the 3×/day HIGH refresh oversubscribed the shared single-IP worker).
-Alaska covers 115 pairs (US hubs ↔ domestic + partner-business intl nonstops). JetBlue
-covers 46 pairs anchored on JFK/BOS/FLL/EWR (after NYC/LA metro fan-out), incl. transcon +
+Alaska covers 137 pairs (US hubs ↔ domestic + partner-business intl nonstops). JetBlue
+covers 62 pairs anchored on JFK/BOS/FLL/EWR (after NYC/LA metro fan-out), incl. transcon +
 TATL Mint business. American (AAdvantage) was removed (Akamai-walled). Delta is scraped from
 the points-pilot-jobs repo (nodriver browser scrape), not here.
 """
@@ -162,7 +162,7 @@ ALASKA_MED_ROUTES: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 # Delta SkyMiles — anchored on ATL/MSP/DTW/SLC hubs + JFK/LAX/SEA/BOS gateways.
-# 62 → 89 undirected pairs (124 → 178 directed). The 2026-06-25 expansion adds
+# Now 113 undirected pairs (226 directed). The 2026-06-25 expansion adds
 # SkyTeam INTERNATIONAL WIDEBODY routes where Delta One business actually exists
 # (AMS/KLM, CDG/Air France, LHR/Virgin Atlantic, ICN/Korean, NRT/HND, GRU/SCL/MEX)
 # plus a couple of domestic spokes — this is what thickens the thin Delta-business cabin.

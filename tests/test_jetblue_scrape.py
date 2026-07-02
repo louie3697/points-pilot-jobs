@@ -27,9 +27,8 @@ def test_jetblue_workflow_runs_three_times_daily():
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
     """matrix must be 0..n-1 and JETBLUE_SHARDS must equal the matrix length so the stride
-    partition (due[idx::n]) covers the whole due set. JetBlue runs >=2 shards so a scheduled
-    run can drain its slice inside the wall-clock budget (single-shard runs overran the 60-min
-    GitHub-Actions cap)."""
+    partition (due[idx::n]) covers the whole due set. JetBlue runs >=4 shards so the expanded
+    transatlantic/Mint queue can drain inside the 60-min GitHub-Actions cap."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
