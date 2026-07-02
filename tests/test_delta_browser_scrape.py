@@ -30,6 +30,16 @@ def test_delta_workflow_shard_matrix_is_consistent():
     assert env["DELTA_SHARD_INDEX"] == "${{ matrix.shard }}"
 
 
+def test_delta_workflow_runs_three_times_daily_with_safe_spacing():
+    with open(_WF) as f:
+        wf = yaml.safe_load(f)
+    schedule = wf[True]["schedule"]
+    crons = [s["cron"] for s in schedule]
+    assert crons == ["0 2 * * *", "0 8 * * *", "0 20 * * *"]
+    hours = [int(c.split()[1]) for c in crons]
+    assert hours == [2, 8, 20]
+
+
 def test_parse_dates_csv_drops_invalid_and_blanks():
     assert _parse_dates_csv("2026-06-20, ,nonsense,2026-06-22") == [
         date(2026, 6, 20),

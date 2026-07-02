@@ -25,3 +25,14 @@ def test_alaska_workflow_shard_matrix_is_consistent():
     assert shards == list(range(n)), f"matrix {shards} must be range(ALASKA_SHARDS={n})"
     assert n == 5, "Alaska runs 5 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["ALASKA_SHARD_INDEX"] == "${{ matrix.shard }}"
+
+
+def test_alaska_workflow_runs_four_times_daily_with_safe_spacing():
+    with open(_WF) as f:
+        wf = yaml.safe_load(f)
+    schedule = wf[True]["schedule"]
+    crons = [s["cron"] for s in schedule]
+    assert crons == ["17 1,7,13,19 * * *"]
+    hours = [int(h) for h in crons[0].split()[1].split(",")]
+    assert hours == [1, 7, 13, 19]
+    assert all(not (8 <= h <= 11) for h in hours), "Alaska must avoid the 08-11 UTC browser block"
