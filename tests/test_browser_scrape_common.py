@@ -192,3 +192,42 @@ def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(
     assert metric["blocked_airline"] == "delta"
     assert metric["blocked_route"] == f"{route_jobs[0].origin}-{route_jobs[0].dest}"
     assert metric["blocked_backoff_min"] == SCRAPER_BLOCK_COOLDOWN_MIN
+
+
+def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch):
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+
+    _seed_due(6)
+    today = date(2026, 6, 18)
+    route_jobs, dates = common.build_queue_plan(
+        "delta", shard_index=0, shards=2, max_legs=2, scrape_days=1, today=today
+    )
+
+    class _Scraper:
+        source = "delta"
+
+        def scrape(self, o, d, travel):
+            return []
+
+        def close(self):
+            pass
+
+    common.run_scrape(
+        _Scraper(),
+        [],
+        dates,
+        source="delta",
+        service="point-pilot-delta",
+        airline="delta",
+        heartbeat_url="",
+        logger=logging.getLogger("t"),
+        route_jobs=route_jobs,
+    )
+
+    assert metrics
+    metric = metrics[0]
+    assert metric["queue_selected_routes"] == 2
+    assert metric["queue_left_due_estimate"] == 4
+    assert metric["queue_fill_ratio"] == 0.33

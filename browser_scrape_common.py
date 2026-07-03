@@ -145,8 +145,6 @@ def build_queue_plan(
     # get_due_batch widens by SCORE_FETCH_MULTIPLE internally — pass the plain intended batch size.
     due = q.get_due_batch(limit=max_legs * shards, airline=airline)
     mine = due[shard_index::shards][:max_legs]
-    for job in mine:
-        job.queue_due_count = len(due)
     dates = [today + timedelta(days=i) for i in range(scrape_days)]
     return mine, dates
 

@@ -132,6 +132,9 @@ class QueueManager:
         the existing ``limit`` (no extra requests), so it's WAF-neutral. Per-airline batching means
         promoting JetBlue's never-scraped tail never touches Alaska's slots."""
         fetch = max(limit, limit * SCORE_FETCH_MULTIPLE)
+        due_count = db.count_due_routes(airline=airline)
+        if due_count == 0:
+            return []
         rows = db.get_due_routes(limit=fetch, airline=airline)
         now = datetime.now(timezone.utc)
 
@@ -177,7 +180,7 @@ class QueueManager:
                 change_rate=_seed_rate(r["change_rate"]),
                 interval_h=r["interval_h"],
                 last_cheapest=r["last_cheapest"],
-                queue_due_count=len(rows),
+                queue_due_count=due_count,
             )
             for r in rows
         ]

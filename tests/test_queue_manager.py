@@ -106,3 +106,14 @@ def test_mark_scraped_persists_adaptive_state(queue):
         ).fetchone()
     assert row[0] is not None
     assert json.loads(row[1]) == {"economy": 9000}
+
+
+def test_get_due_batch_reports_actual_due_backlog_beyond_limit(queue):
+    for i in range(6):
+        db.upsert_route(f"O{i:02d}", f"D{i:02d}", PriorityTier.MED, airline="delta")
+    _exec("UPDATE pp.routes_queue SET next_scrape_at_utc = now() - INTERVAL '1 hour'")
+
+    batch = queue.get_due_batch(limit=4, airline="delta")
+
+    assert len(batch) == 4
+    assert {job.queue_due_count for job in batch} == {6}
