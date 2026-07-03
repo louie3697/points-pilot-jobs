@@ -1,8 +1,9 @@
 """Postgres / SQLAlchemy Core query functions — the routes-queue group. Each function takes an
 explicit SQLAlchemy ``Connection`` as its first arg, then the call-specific arguments.
 
-Group: upsert_route, get_due_routes, get_route, bump_decayed_demand, record_scrape_outcome,
-reset_all_route_schedules, increment_search_count, set_route_tier, is_route_stale.
+Group: upsert_route, get_due_routes, count_due_routes, get_route, bump_decayed_demand,
+record_scrape_outcome, record_blocked_route, reset_all_route_schedules, increment_search_count,
+set_route_tier, is_route_stale.
 """
 
 from __future__ import annotations
@@ -84,6 +85,14 @@ def get_due_routes(
 
     rows = conn.execute(stmt).all()
     return [dict(zip(_ROUTE_COLUMNS, row, strict=False)) for row in rows]
+
+
+def count_due_routes(conn: Connection, airline: str | None = None) -> int:
+    """Return the full count of routes whose next_scrape_at has passed for one airline or all."""
+    stmt = select(func.count()).select_from(RoutesQueue).where(RoutesQueue.next_scrape_at_utc <= func.now())
+    if airline:
+        stmt = stmt.where(RoutesQueue.airline == airline)
+    return int(conn.execute(stmt).scalar() or 0)
 
 
 def get_route(
@@ -172,6 +181,21 @@ def record_scrape_outcome(
             change_rate=change_rate,
             last_cheapest=last_cheapest,
         )
+    )
+
+
+def record_blocked_route(
+    conn: Connection, origin: str, dest: str, airline: str, *, next_scrape_at: datetime
+) -> None:
+    """Apply a short backoff for a blocked route without recording a successful scrape."""
+    conn.execute(
+        update(RoutesQueue)
+        .where(
+            RoutesQueue.origin == origin,
+            RoutesQueue.dest == dest,
+            RoutesQueue.airline == airline,
+        )
+        .values(next_scrape_at_utc=next_scrape_at)
     )
 
 

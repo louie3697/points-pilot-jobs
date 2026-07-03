@@ -30,10 +30,12 @@ from pp_db.queries_flights import get_flights, get_fresh_scrape_dates, upsert_fl
 from pp_db.queries_reporting import cabin_distribution, route_coverage
 from pp_db.queries_routes import (
     bump_decayed_demand,
+    count_due_routes,
     get_due_routes,
     get_route,
     increment_search_count,
     is_route_stale,
+    record_blocked_route,
     record_scrape_outcome,
     reset_all_route_schedules,
     set_route_tier,

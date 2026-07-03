@@ -11,7 +11,7 @@ raw UPDATEs force routes due. Skips if `DATABASE_URL` is unset.
 
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -24,7 +24,7 @@ if not os.environ.get("DATABASE_URL"):
 from sqlalchemy import text  # noqa: E402
 
 import browser_scrape_common as common  # noqa: E402
-from config.settings import PriorityTier  # noqa: E402
+from config.settings import SCRAPER_BLOCK_COOLDOWN_MIN, PriorityTier  # noqa: E402
 from pp_db import autocommit as db  # noqa: E402
 from pp_db.engine import get_engine  # noqa: E402
 
@@ -101,7 +101,7 @@ def test_run_scrape_queue_mode_marks_adaptively():
 
 
 def test_run_scrape_queue_mode_blocked_route_stays_due():
-    """The critical safety invariant: a WAF-blocked route is NEVER marked (stays due)."""
+    """A blocked route is not marked scraped, but it is backed off briefly."""
     from scrapers.base import ScraperBlockedError
 
     _seed_due(1)
@@ -130,12 +130,104 @@ def test_run_scrape_queue_mode_blocked_route_stays_due():
         logger=logging.getLogger("t"),
         route_jobs=route_jobs,
     )
-    # No interval_h was written, and last_scraped is still NULL -> route remains due.
+
     with get_engine().connect() as c:
-        marked = c.execute(
+        row = c.execute(
             text(
-                "SELECT count(*) FROM pp.routes_queue "
-                "WHERE airline='delta' AND interval_h IS NOT NULL"
+                "SELECT interval_h, last_scraped_at_utc, next_scrape_at_utc "
+                "FROM pp.routes_queue WHERE airline='delta'"
             )
-        ).scalar()
-    assert marked == 0
+        ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2].tzinfo is None
+
+    backoff_until = row[2].replace(tzinfo=timezone.utc)
+    expected_min = timedelta(minutes=SCRAPER_BLOCK_COOLDOWN_MIN - 1)
+    expected_max = timedelta(minutes=SCRAPER_BLOCK_COOLDOWN_MIN + 1)
+    delta = backoff_until - datetime.now(timezone.utc)
+    assert expected_min <= delta <= expected_max
+
+
+def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(monkeypatch):
+    from scrapers.base import ScraperBlockedError
+
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+
+    _seed_due(3)
+    today = date(2026, 6, 18)
+    route_jobs, dates = common.build_queue_plan(
+        "delta", shard_index=0, shards=2, max_legs=2, scrape_days=1, today=today
+    )
+
+    class _Blocking:
+        source = "delta"
+
+        def scrape(self, o, d, travel):
+            raise ScraperBlockedError("WAF")
+
+        def close(self):
+            pass
+
+    common.run_scrape(
+        _Blocking(),
+        [],
+        dates,
+        source="delta",
+        service="point-pilot-delta",
+        airline="delta",
+        heartbeat_url="",
+        logger=logging.getLogger("t"),
+        route_jobs=route_jobs,
+    )
+
+    assert metrics
+    metric = metrics[0]
+    assert metric["queue_selected_routes"] == len(route_jobs)
+    assert metric["queue_left_due_estimate"] == 1
+    assert metric["queue_fill_ratio"] == 0.67
+    assert metric["blocked"] is True
+    assert metric["blocked_airline"] == "delta"
+    assert metric["blocked_route"] == f"{route_jobs[0].origin}-{route_jobs[0].dest}"
+    assert metric["blocked_backoff_min"] == SCRAPER_BLOCK_COOLDOWN_MIN
+
+
+def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch):
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+
+    _seed_due(6)
+    today = date(2026, 6, 18)
+    route_jobs, dates = common.build_queue_plan(
+        "delta", shard_index=0, shards=2, max_legs=2, scrape_days=1, today=today
+    )
+
+    class _Scraper:
+        source = "delta"
+
+        def scrape(self, o, d, travel):
+            return []
+
+        def close(self):
+            pass
+
+    common.run_scrape(
+        _Scraper(),
+        [],
+        dates,
+        source="delta",
+        service="point-pilot-delta",
+        airline="delta",
+        heartbeat_url="",
+        logger=logging.getLogger("t"),
+        route_jobs=route_jobs,
+    )
+
+    assert metrics
+    metric = metrics[0]
+    assert metric["queue_selected_routes"] == 2
+    assert metric["queue_left_due_estimate"] == 4
+    assert metric["queue_fill_ratio"] == 0.33

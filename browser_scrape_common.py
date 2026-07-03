@@ -221,20 +221,38 @@ def run_scrape(
         due). ``routes_unchanged`` (cheapest-by-cabin unchanged vs the prior scrape) is tracked and
         added to the metric.
     """
-    from config.settings import PriorityTier
+    from config.settings import SCRAPER_BLOCK_COOLDOWN_MIN, PriorityTier
     from pipeline.normalizer import filter_valid, stamp_expiry
     from pipeline.obs import ship_metric
     from pp_db.autocommit import close_connection, upsert_flights
     from scrapers.base import ScraperBlockedError
 
     queue_mode = route_jobs is not None
+    blocked_route = None
+    blocked_airline = None
+    blocked_backoff_min = None
+    queue_selected_routes = None
+    queue_left_due_estimate = None
+    queue_fill_ratio = None
     if queue_mode:
         from pipeline.queue_manager import QueueManager
         from pipeline.scoring import cheapest_by_cabin
 
         qm = QueueManager(scraper=None)
         iterable = list(route_jobs)
-        due_count = len(iterable)
+        first_job = iterable[0] if iterable else None
+        if first_job and first_job.queue_due_count:
+            due_count = first_job.queue_due_count
+        else:
+            due_count = len(iterable)
+        try:
+            queue_selected_routes = len(iterable)
+            queue_left_due_estimate = max(0, due_count - queue_selected_routes)
+            queue_fill_ratio = round(queue_selected_routes / due_count, 2) if due_count else None
+        except Exception:  # noqa: BLE001
+            queue_selected_routes = None
+            queue_left_due_estimate = None
+            queue_fill_ratio = None
     else:
         iterable = [_PairJob(o, d) for o, d in pairs]
         due_count = len(pairs)
@@ -262,6 +280,11 @@ def run_scrape(
                     recs = scraper.scrape(origin, dest, travel)
                 except ScraperBlockedError as exc:
                     logger.warning("blocked (%s) — aborting run (rows so far persist)", exc)
+                    if queue_mode:
+                        qm.mark_blocked(job, datetime.now(timezone.utc), SCRAPER_BLOCK_COOLDOWN_MIN)
+                        blocked_route = f"{origin}-{dest}"
+                        blocked_airline = job.airline
+                        blocked_backoff_min = SCRAPER_BLOCK_COOLDOWN_MIN
                     blocked = True
                     break
                 except Exception as exc:  # noqa: BLE001 — one route/date must not sink the run
@@ -300,6 +323,12 @@ def run_scrape(
             "duration_s": duration_s,
             "blocked": blocked,
             "stopped_early": stopped_early,
+            "blocked_route": blocked_route,
+            "blocked_airline": blocked_airline,
+            "blocked_backoff_min": blocked_backoff_min,
+            "queue_selected_routes": queue_selected_routes,
+            "queue_left_due_estimate": queue_left_due_estimate,
+            "queue_fill_ratio": queue_fill_ratio,
             **freshness(source, logger),
         }
     )
