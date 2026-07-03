@@ -34,6 +34,7 @@ from pp_db.queries_routes import (
     get_route,
     increment_search_count,
     is_route_stale,
+    record_blocked_route,
     record_scrape_outcome,
     reset_all_route_schedules,
     set_route_tier,

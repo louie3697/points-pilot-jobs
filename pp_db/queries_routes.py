@@ -2,7 +2,8 @@
 explicit SQLAlchemy ``Connection`` as its first arg, then the call-specific arguments.
 
 Group: upsert_route, get_due_routes, get_route, bump_decayed_demand, record_scrape_outcome,
-reset_all_route_schedules, increment_search_count, set_route_tier, is_route_stale.
+record_blocked_route, reset_all_route_schedules, increment_search_count, set_route_tier,
+is_route_stale.
 """
 
 from __future__ import annotations
@@ -172,6 +173,21 @@ def record_scrape_outcome(
             change_rate=change_rate,
             last_cheapest=last_cheapest,
         )
+    )
+
+
+def record_blocked_route(
+    conn: Connection, origin: str, dest: str, airline: str, *, next_scrape_at: datetime
+) -> None:
+    """Apply a short backoff for a blocked route without recording a successful scrape."""
+    conn.execute(
+        update(RoutesQueue)
+        .where(
+            RoutesQueue.origin == origin,
+            RoutesQueue.dest == dest,
+            RoutesQueue.airline == airline,
+        )
+        .values(next_scrape_at_utc=next_scrape_at)
     )
 
 

@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from types import SimpleNamespace
 
 import browser_scrape_common as common
+from config.settings import SCRAPER_BLOCK_COOLDOWN_MIN
 
 
 class _FakeScraper:
@@ -84,3 +86,61 @@ def test_run_scrape_completes_all_routes_within_generous_budget(monkeypatch):
     assert scraper.calls == 2  # both routes scraped
     assert metrics[0]["routes_scraped"] == 2
     assert metrics[0]["stopped_early"] is False
+
+
+def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monkeypatch):
+    import pipeline.queue_manager as queue_manager
+    from scrapers.base import ScraperBlockedError
+
+    metrics = _stub_io(monkeypatch)
+    blocked_calls: list[tuple[str, str, str, int]] = []
+
+    class _BlockingScraper:
+        source = "jetblue"
+
+        def scrape(self, origin, dest, travel):
+            raise ScraperBlockedError("WAF")
+
+        def close(self):
+            pass
+
+    class _FakeQM:
+        def __init__(self, scraper=None):
+            pass
+
+        def mark_blocked(self, job, now, cooldown_min):
+            blocked_calls.append((job.origin, job.dest, job.airline, cooldown_min))
+
+    monkeypatch.setattr(queue_manager, "QueueManager", _FakeQM)
+    route_jobs = [
+        SimpleNamespace(
+            origin="SEA",
+            dest="JFK",
+            airline="jetblue",
+            tier="MED",
+            queue_due_count=4,
+        )
+    ]
+
+    common.run_scrape(
+        _BlockingScraper(),
+        [],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="jetblue",
+        heartbeat_url="",
+        logger=logging.getLogger("t"),
+        route_jobs=route_jobs,
+        time_budget_s=3600,
+    )
+
+    assert blocked_calls == [("SEA", "JFK", "jetblue", SCRAPER_BLOCK_COOLDOWN_MIN)]
+    assert metrics
+    assert metrics[0]["blocked"] is True
+    assert metrics[0]["blocked_route"] == "SEA-JFK"
+    assert metrics[0]["blocked_airline"] == "jetblue"
+    assert metrics[0]["blocked_backoff_min"] == SCRAPER_BLOCK_COOLDOWN_MIN
+    assert metrics[0]["queue_selected_routes"] == 1
+    assert metrics[0]["queue_left_due_estimate"] == 3
+    assert metrics[0]["queue_fill_ratio"] == 0.25

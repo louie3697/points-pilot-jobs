@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from config.settings import DEMAND_REF, SCORE_W_CHANGE, SCORE_W_DEMAND, SCORE_W_OVERDUE
 from pipeline import scoring
 
 NOW = datetime(2026, 6, 18, 12, 0, tzinfo=timezone.utc)
@@ -86,6 +87,27 @@ class TestRouteScore:
             demand_ref=10,
         )
         assert s == 0.5  # demand_norm clamps to 1, others 0
+
+    def test_extreme_overdue_can_beat_modest_demand(self):
+        extreme_overdue = scoring.route_score(
+            effective_demand=0,
+            overdue=3.0,
+            change_rate=0.0,
+            w_demand=SCORE_W_DEMAND,
+            w_overdue=SCORE_W_OVERDUE,
+            w_change=SCORE_W_CHANGE,
+            demand_ref=DEMAND_REF,
+        )
+        modest_demand = scoring.route_score(
+            effective_demand=2.0,
+            overdue=0.1,
+            change_rate=0.0,
+            w_demand=SCORE_W_DEMAND,
+            w_overdue=SCORE_W_OVERDUE,
+            w_change=SCORE_W_CHANGE,
+            demand_ref=DEMAND_REF,
+        )
+        assert extreme_overdue > modest_demand
 
 
 @dataclass

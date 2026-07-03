@@ -54,6 +54,42 @@ def test_get_due_batch_orders_by_score(queue):
     assert batch[0].origin == "CCC"
 
 
+def test_get_due_batch_never_scraped_routes_stay_first(queue):
+    for o, d in [("AAA", "BBB"), ("CCC", "DDD")]:
+        db.upsert_route(o, d, PriorityTier.MED, airline="delta")
+    _exec("UPDATE pp.routes_queue SET next_scrape_at_utc = now() - INTERVAL '1 hour'")
+    _exec(
+        "UPDATE pp.routes_queue "
+        "SET last_scraped_at_utc = now() - INTERVAL '1 hour', decayed_demand = 50 "
+        "WHERE origin='CCC'"
+    )
+
+    batch = queue.get_due_batch(limit=10, airline="delta")
+    assert (batch[0].origin, batch[0].dest) == ("AAA", "BBB")
+
+
+def test_get_due_batch_extreme_overdue_can_beat_modest_demand(queue):
+    for o, d in [("AAA", "BBB"), ("CCC", "DDD")]:
+        db.upsert_route(o, d, PriorityTier.MED, airline="delta")
+    _exec(
+        "UPDATE pp.routes_queue SET "
+        "last_scraped_at_utc = now() - INTERVAL '2 day', "
+        "next_scrape_at_utc = now() - INTERVAL '3 day', "
+        "decayed_demand = 0 "
+        "WHERE origin='AAA'"
+    )
+    _exec(
+        "UPDATE pp.routes_queue SET "
+        "last_scraped_at_utc = now() - INTERVAL '2 day', "
+        "next_scrape_at_utc = now() - INTERVAL '10 minute', "
+        "decayed_demand = 2 "
+        "WHERE origin='CCC'"
+    )
+
+    batch = queue.get_due_batch(limit=10, airline="delta")
+    assert (batch[0].origin, batch[0].dest) == ("AAA", "BBB")
+
+
 def test_mark_scraped_persists_adaptive_state(queue):
     db.upsert_route("ATL", "LAX", PriorityTier.MED, airline="delta")
     _exec("UPDATE pp.routes_queue SET next_scrape_at_utc = now() - INTERVAL '1 hour'")

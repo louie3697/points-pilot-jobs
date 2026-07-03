@@ -30,6 +30,7 @@ from config.settings import (
     SCORE_W_DEMAND,
     SCORE_W_OVERDUE,
     SCRAPE_DAYS_AHEAD,
+    SCRAPER_BLOCK_COOLDOWN_MIN,
     TTL_HOURS,
     PriorityTier,
 )
@@ -81,6 +82,7 @@ class RouteJob:
     change_rate: float = CHANGE_RATE_SEED
     interval_h: float | None = None
     last_cheapest: str | None = None
+    queue_due_count: int | None = None
 
 
 class QueueManager:
@@ -175,6 +177,7 @@ class QueueManager:
                 change_rate=_seed_rate(r["change_rate"]),
                 interval_h=r["interval_h"],
                 last_cheapest=r["last_cheapest"],
+                queue_due_count=len(rows),
             )
             for r in rows
         ]
@@ -214,6 +217,24 @@ class QueueManager:
             new_interval,
         )
         return changed
+
+    def mark_blocked(
+        self, job: RouteJob, now: datetime, cooldown_min: int = SCRAPER_BLOCK_COOLDOWN_MIN
+    ) -> None:
+        """Defer a blocked route briefly without stamping it as successfully scraped."""
+        db.record_blocked_route(
+            job.origin,
+            job.dest,
+            job.airline,
+            next_scrape_at=now + timedelta(minutes=cooldown_min),
+        )
+        logger.debug(
+            "Blocked route deferred %s→%s [%s] by %d min",
+            job.origin,
+            job.dest,
+            job.airline,
+            cooldown_min,
+        )
 
     # ---------------------------------------------------------------------------
     # Tier promotion
