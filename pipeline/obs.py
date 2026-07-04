@@ -108,6 +108,19 @@ def flush(timeout: float = 5.0) -> None:
         t.join(max(0.0, deadline - time.monotonic()))
 
 
+def flush_then_hard_exit(code: int = 0, *, delay_s: float = 0.0) -> None:
+    """Flush Better Stack POST threads before hard-exiting scraper entrypoints.
+
+    Some browser libraries leave non-daemon teardown tasks alive after successful scrapes.
+    The scraper entrypoints intentionally hard-exit to avoid hanging GitHub Actions jobs, but
+    metrics/logs are shipped on daemon threads and can be lost unless they are flushed first.
+    """
+    if delay_s > 0:
+        time.sleep(delay_s)
+    flush()
+    os._exit(code)
+
+
 def _format_record(service: str, record: logging.LogRecord, identity: dict | None = None) -> str:
     """One raw log line: '<LEVEL> <service> [<logger>] <message>' (+ ' (k=v …)' identity,
     + folded traceback)."""

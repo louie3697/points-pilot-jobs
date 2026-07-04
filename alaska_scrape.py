@@ -11,11 +11,11 @@ live in browser_scrape_common.py.
 import logging
 import os
 import sys
-import time
 from datetime import date
 
 import browser_scrape_common as common
 from config.settings import CRON_MAX_LEGS_PER_SHARD
+from pipeline.obs import flush_then_hard_exit
 
 ALASKA_HEARTBEAT_URL = os.getenv("ALASKA_HEARTBEAT_URL", "")
 
@@ -75,5 +75,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
     # Parity with the browser entrypoints' hard-exit convention; harmless for httpx.
-    time.sleep(1)
-    os._exit(0)
+    flush_then_hard_exit()

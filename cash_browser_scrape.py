@@ -10,8 +10,8 @@ the SAME cash primitives as ``run_once`` — coverage → scrape → match → u
   * scrapes ALL cabins every run (GA has headroom; no ``cabins_for_run`` demotion),
   * enforces a wall-clock budget (``CASH_RUN_BUDGET_S``) so a rare nodriver listener-race hang can
     never run past the GH-Actions step timeout, and
-  * hard-exits with ``os._exit(0)`` after a brief flush (nodriver leaves pending asyncio tasks that
-    otherwise keep the interpreter alive — same reason the award browser scrapes do).
+  * hard-exits with ``flush_then_hard_exit`` after a brief flush (nodriver leaves pending asyncio
+    tasks that otherwise keep the interpreter alive — same reason the award browser scrapes do).
 
 The GitHub Actions workflow is now the primary scheduled Google Flights cash path. The old
 ``google_flights_main.py`` Fly runner is a legacy/bake-in path only; keep it stopped or scaled
@@ -37,7 +37,7 @@ from config.settings import (
     GFLIGHTS_HEARTBEAT_URL,
 )
 from pipeline.cash_matcher import match_cash_fares
-from pipeline.obs import install_log_shipping, ship_cash_run
+from pipeline.obs import flush_then_hard_exit, install_log_shipping, ship_cash_run
 from pp_db.autocommit import (
     get_flights_for_match,
     get_top_cash_routes,
@@ -179,5 +179,4 @@ if __name__ == "__main__":
     # alive, so the process never exits on its own and the GH-Actions step hangs until its
     # timeout. main() has scraped, upserted, shipped its metric, and pinged the heartbeat by now,
     # so flush briefly then hard-exit (same pattern as the award browser scrapes).
-    time.sleep(3)
-    os._exit(0)
+    flush_then_hard_exit(delay_s=3.0)

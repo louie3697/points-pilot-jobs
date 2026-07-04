@@ -14,11 +14,11 @@ The run plan + scrape loop + metric + heartbeat are shared — see ``browser_scr
 import logging
 import os
 import sys
-import time
 from datetime import date
 
 import browser_scrape_common as common
 from config.settings import CRON_MAX_LEGS_PER_SHARD
+from pipeline.obs import flush_then_hard_exit
 
 SOUTHWEST_HEARTBEAT_URL = os.getenv("SOUTHWEST_HEARTBEAT_URL", "")  # optional GH-Actions heartbeat
 
@@ -125,5 +125,4 @@ if __name__ == "__main__":
     # nodriver leaves keepalive/aclose tasks on its loop that keep the interpreter alive, so the
     # process never exits and the GH Actions step hangs until timeout. main() has already
     # scraped/upserted/shipped its metric, so flush briefly then hard-exit.
-    time.sleep(3)
-    os._exit(0)
+    flush_then_hard_exit(delay_s=3.0)

@@ -10,11 +10,11 @@ inline JetBlue scrape independently. Shared logic lives in browser_scrape_common
 import logging
 import os
 import sys
-import time
 from datetime import date
 
 import browser_scrape_common as common
 from config.settings import CRON_MAX_LEGS_PER_SHARD
+from pipeline.obs import flush_then_hard_exit
 
 JETBLUE_HEARTBEAT_URL = os.getenv("JETBLUE_HEARTBEAT_URL", "")
 
@@ -72,5 +72,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    time.sleep(1)
-    os._exit(0)
+    flush_then_hard_exit()
