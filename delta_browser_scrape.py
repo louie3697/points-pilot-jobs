@@ -14,11 +14,11 @@ The run plan + scrape loop + metric + heartbeat are shared — see ``browser_scr
 import logging
 import os
 import sys
-import time
 from datetime import date
 
 import browser_scrape_common as common
 from config.settings import CRON_MAX_LEGS_PER_SHARD
+from pipeline.obs import flush_then_hard_exit
 
 DELTA_HEARTBEAT_URL = os.getenv("DELTA_HEARTBEAT_URL", "")  # optional GH-Actions run heartbeat
 
@@ -127,5 +127,4 @@ if __name__ == "__main__":
     # the interpreter alive, so the process never exits on its own and the GitHub Actions step hangs
     # until its timeout. main() has already scraped, upserted, shipped its metric, and pinged the
     # heartbeat by this point, so flush briefly then hard-exit.
-    time.sleep(3)
-    os._exit(0)
+    flush_then_hard_exit(delay_s=3.0)
