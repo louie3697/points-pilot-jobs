@@ -28,5 +28,5 @@ def test_cash_workflow_shards_and_route_limit_are_consistent():
     assert shards == list(range(n))
     assert n == 6
     assert env["CASH_SHARD_INDEX"] == "${{ matrix.shard }}"
-    assert env["CASH_SCRAPE_DAYS"] == "30"
+    assert env["CASH_SCRAPE_DAYS"] == "45"
     assert env["CASH_TOP_ROUTES"] == "800"

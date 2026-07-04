@@ -88,6 +88,27 @@ def test_run_scrape_completes_all_routes_within_generous_budget(monkeypatch):
     assert metrics[0]["stopped_early"] is False
 
 
+def test_run_scrape_metric_counts_zero_record_routes(monkeypatch):
+    metrics = _stub_io(monkeypatch)
+    scraper = _FakeScraper()
+
+    common.run_scrape(
+        scraper,
+        [("SEA", "JFK"), ("LAX", "BOS")],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="",
+        logger=logging.getLogger("t"),
+        time_budget_s=3600,
+    )
+
+    assert scraper.calls == 2
+    assert metrics[0]["routes_scraped"] == 2
+    assert metrics[0]["routes_zero"] == 2
+
+
 def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monkeypatch):
     import pipeline.queue_manager as queue_manager
     from scrapers.base import ScraperBlockedError
@@ -144,3 +165,4 @@ def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monk
     assert metrics[0]["queue_selected_routes"] == 1
     assert metrics[0]["queue_left_due_estimate"] == 3
     assert metrics[0]["queue_fill_ratio"] == 0.25
+    assert metrics[0]["routes_zero"] == 0

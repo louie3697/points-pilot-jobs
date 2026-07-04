@@ -45,6 +45,6 @@ jobs:
           GFLIGHTS_HEARTBEAT_URL: ${{ secrets.GFLIGHTS_HEARTBEAT_URL }}
           CASH_SHARDS: "6"
           CASH_SHARD_INDEX: ${{ matrix.shard }}
-          CASH_SCRAPE_DAYS: "30"
+          CASH_SCRAPE_DAYS: "45"
           CASH_TOP_ROUTES: "800"
         run: xvfb-run -a python cash_browser_scrape.py

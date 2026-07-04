@@ -59,6 +59,7 @@ jobs:
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           DELTA_HEARTBEAT_URL: ${{ secrets.DELTA_HEARTBEAT_URL }}
           DELTA_SCRAPE_DAYS: "90"
+          CRON_TIME_BUDGET_S: "7200"
           DELTA_SHARDS: "7"
           DELTA_SHARD_INDEX: ${{ matrix.shard }}
           DELTA_ROUTE_ORIGIN: ${{ inputs.origin }}

@@ -28,6 +28,7 @@ def test_delta_workflow_shard_matrix_is_consistent():
     assert shards == list(range(n)), f"matrix {shards} must be range(DELTA_SHARDS={n})"
     assert n == 7, "Delta runs 7 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["DELTA_SHARD_INDEX"] == "${{ matrix.shard }}"
+    assert env["CRON_TIME_BUDGET_S"] == "7200"
 
 
 def test_delta_workflow_runs_three_times_daily_with_safe_spacing():

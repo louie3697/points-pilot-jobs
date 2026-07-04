@@ -259,7 +259,7 @@ def run_scrape(
 
     budget_s = _default_time_budget_s() if time_budget_s is None else time_budget_s
     started = time.monotonic()
-    total = error_count = routes_scraped = routes_unchanged = 0
+    total = error_count = routes_scraped = routes_unchanged = routes_zero = 0
     blocked = stopped_early = False
     try:
         for job in iterable:
@@ -267,10 +267,14 @@ def run_scrape(
                 break
             if time.monotonic() - started >= budget_s:
                 stopped_early = True
+                assigned_count = len(iterable)
                 logger.warning(
-                    "time budget %.0fs reached after %d/%d routes — stopping cleanly "
-                    "(unreached routes stay due)",
-                    budget_s, routes_scraped, due_count,
+                    "time budget %.0fs reached after %d/%d assigned routes "
+                    "(%d total due backlog) — stopping cleanly (unreached routes stay due)",
+                    budget_s,
+                    routes_scraped,
+                    assigned_count,
+                    due_count,
                 )
                 break
             origin, dest = job.origin, job.dest
@@ -299,6 +303,8 @@ def run_scrape(
             if blocked:
                 break  # do NOT mark — the blocked route stays due
             routes_scraped += 1
+            if not route_recs:
+                routes_zero += 1
             if queue_mode:
                 now = datetime.now(timezone.utc)
                 changed = qm.mark_scraped(job, cheapest_by_cabin(route_recs), now)
@@ -318,6 +324,7 @@ def run_scrape(
             "due_routes": due_count,
             "routes_scraped": routes_scraped,
             "routes_unchanged": routes_unchanged,
+            "routes_zero": routes_zero,
             "records": total,
             "errors": error_count,
             "duration_s": duration_s,
