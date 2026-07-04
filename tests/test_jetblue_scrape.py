@@ -11,24 +11,21 @@ def test_jetblue_scrape_imports_and_configures():
     assert JetBlueScraper.airline_code == "B6"
 
 
-def test_jetblue_workflow_runs_three_times_daily():
-    """POI-20 lever #3 bumped the JetBlue cron 2×→3×/day to drain the larger route set + the
-    never-scraped tail. Guards the schedule (and that it stays clear of the 08–11 UTC block)."""
+def test_jetblue_workflow_runs_daily_probe_while_blocked():
+    """JetBlue is currently 100% blocked on GitHub Actions HTTP 406, so keep a daily low-rate
+    health probe instead of three 5-shard coverage pushes."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     # PyYAML parses the bare `on:` key as the boolean True.
     schedule = wf[True]["schedule"]
     crons = [s["cron"] for s in schedule]
-    assert crons == ["37 2,14,20 * * *"]
-    hours = [int(h) for h in crons[0].split()[1].split(",")]
-    assert len(hours) == 3
-    assert all(not (8 <= h <= 11) for h in hours), "cron must avoid the 08–11 UTC award block"
+    assert crons == ["37 20 * * *"]
+    hour = int(crons[0].split()[1])
+    assert not (8 <= hour <= 11), "cron must avoid the 08–11 UTC award block"
 
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
-    """matrix must be 0..n-1 and JETBLUE_SHARDS must equal the matrix length so the stride
-    partition (due[idx::n]) covers the whole due set. JetBlue runs 5 fresh-IP shards after the
-    July 2026 queue-drain bump."""
+    """JetBlue stays in one-shard probe mode while 406 blocks are 100%."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -36,5 +33,6 @@ def test_jetblue_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["JETBLUE_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(JETBLUE_SHARDS={n})"
-    assert n == 5, "JetBlue runs 5 fresh-IP shards after the July 2026 queue-drain bump"
+    assert n == 1, "JetBlue runs one daily probe shard while HTTP 406 blocked"
+    assert env["JETBLUE_MAX_LEGS_PER_SHARD"] == "1"
     assert env["JETBLUE_SHARD_INDEX"] == "${{ matrix.shard }}"
