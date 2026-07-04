@@ -1,9 +1,10 @@
 name: southwest-browser-scrape
 
-# Southwest browser scrape, run entirely within this repo (GH Actions / Azure IP mints a valid
-# F5/Shape sensor token where Fly's IP would be blocked). scrapers/ config/ pp_db/ pipeline/ are
-# vendored; scrapers/browser.py + scrapers/southwest.py are canonical here. Headful Chrome under
-# xvfb (Shape/Akamai score headless harshly). Writes Southwest rows into Postgres `flights`.
+  # Southwest browser scrape, run entirely within this repo (GH Actions / Azure IP mints a valid
+  # F5/Shape sensor token where Fly's IP would be blocked). Blocked-state probe mode keeps this to
+  # one daily low-rate shard until 403 recovery. scrapers/ config/ pp_db/ pipeline/ are vendored;
+  # scrapers/browser.py + scrapers/southwest.py are canonical here. Headful Chrome under xvfb
+  # (Shape/Akamai score headless harshly). Writes Southwest rows into Postgres `flights`.
 on:
   workflow_dispatch:
     inputs:
@@ -39,18 +40,13 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --shm-size=2g
-    # Expanded route catalogue × both directions: Southwest's F5/Shape per-request sensor makes it
-    # the slowest scrape, and the old 75-min cap cancelled a full run mid-flight.
-    # This is a ceiling, not the runtime — typical runs finish well under it.
+    # 1-shard probe mode while Southwest is 403-blocked on Azure; keep the window short (30d) and
+    # a low per-IP leg cap to reduce repeat bans.
     timeout-minutes: 150
-    # 6 shards on separate runner IPs split the due set (stride-sharded by build_queue_plan),
-    # each staying at the proven 20 legs/shard — Southwest's F5/Shape per-session ceiling is
-    # uncharacterized, so we add IPs rather than push one IP higher. On-demand single-route
-    # dispatch still spawns all shards, but only shard 0 does the work.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0]
     steps:
       - uses: actions/checkout@v6
       - name: Scrape Southwest (headful Chrome under xvfb, Azure IP)
@@ -61,8 +57,9 @@ jobs:
           BETTERSTACK_LOGS_TOKEN: ${{ secrets.BETTERSTACK_LOGS_TOKEN }}
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           SOUTHWEST_HEARTBEAT_URL: ${{ secrets.SOUTHWEST_HEARTBEAT_URL }}
-          SOUTHWEST_SCRAPE_DAYS: "90"
-          SOUTHWEST_SHARDS: "6"
+          SOUTHWEST_SCRAPE_DAYS: "30"
+          SOUTHWEST_SHARDS: "1"
+          SOUTHWEST_MAX_LEGS_PER_SHARD: "1"
           SOUTHWEST_SHARD_INDEX: ${{ matrix.shard }}
           SOUTHWEST_ROUTE_ORIGIN: ${{ inputs.origin }}
           SOUTHWEST_ROUTE_DEST: ${{ inputs.destination }}

@@ -60,9 +60,7 @@ class _FixedDate:
 
 
 def test_southwest_cron_uses_dense_sparse_horizon(monkeypatch):
-    """The cron path regenerates dates via dense_sparse over the 90d window (NOT
-    build_queue_plan's every-day list): a lean count (leaner than Delta, ~<=20) spanning ~90
-    days, dense near-term — respecting Southwest's F5/Shape ceiling + 150-min job timeout."""
+    """Probe mode keeps a 30d horizon while Southwest is 403-blocked."""
     import southwest_browser_scrape as ep
 
     captured = {}
@@ -77,7 +75,7 @@ def test_southwest_cron_uses_dense_sparse_horizon(monkeypatch):
 
     today = date(2026, 6, 25)
     monkeypatch.setattr(ep, "date", _FixedDate(today))
-    monkeypatch.setattr(ep, "SCRAPE_DAYS", 90)  # the workflow sets SOUTHWEST_SCRAPE_DAYS=90
+    monkeypatch.setattr(ep, "SCRAPE_DAYS", 30)
 
     ep._run_cron(shard_index=0, shards=1)
 
@@ -85,5 +83,5 @@ def test_southwest_cron_uses_dense_sparse_horizon(monkeypatch):
     offsets = sorted((d - today).days for d in dates)
     assert dates != ["IGNORED_DATE"]  # regenerated, not the queue's flat every-day list
     assert offsets[:3] == [0, 1, 2]  # dense near-term, every day
-    assert 80 <= offsets[-1] < 90  # reaches the ~90d horizon (exclusive upper bound)
-    assert len(dates) <= 20  # lean per-session budget (Southwest's F5/Shape + timeout)
+    assert 25 <= offsets[-1] < 30  # reaches the ~30d horizon (exclusive upper bound)
+    assert len(dates) <= 12

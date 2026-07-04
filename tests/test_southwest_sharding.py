@@ -32,10 +32,10 @@ def test_southwest_workflow_shard_matrix_is_consistent():
     n = int(env["SOUTHWEST_SHARDS"])
     # The matrix must be 0..n-1 and SOUTHWEST_SHARDS must equal the matrix length, so every shard
     # gets a distinct index and the stride-partition (due[idx::n]) covers the whole due set.
-    # Asserting consistency (not a fixed count) keeps this green across shard-ramp steps while
-    # still catching a matrix/SHARDS drift.
     assert shards == list(range(n)), f"matrix {shards} must be range(SOUTHWEST_SHARDS={n})"
-    assert n >= 3, "Southwest runs at least 3 fresh-IP shards"
+    assert n == 1, "Southwest runs one daily probe shard while 403 blocked"
+    assert env["SOUTHWEST_MAX_LEGS_PER_SHARD"] == "1"
+    assert env["SOUTHWEST_SCRAPE_DAYS"] == "30"
     assert env["SOUTHWEST_SHARD_INDEX"] == "${{ matrix.shard }}"
 
 
