@@ -57,7 +57,7 @@ a single-route run, and `<AIRLINE>_SCRAPE_DAYS` / `<AIRLINE>_SHARDS` env tuning.
 GH-Actions `matrix` over `<AIRLINE>_SHARD_INDEX`) splits the directed-leg catalogue across parallel
 runners on distinct IPs — used where a single shard can't cover the catalogue under its per-IP WAF
   cap (`<AIRLINE>_MAX_LEGS_PER_SHARD`, default 20): **Southwest** runs 6 shards, **Delta** 7,
-  **Alaska** and **JetBlue** 5, **Turkish** 3, and **Etihad** 2. The `scrapers/browser.py` base +
+  **Alaska** 5, **JetBlue** 1-route/1-date (temporary probe), **Turkish** 3, and **Etihad** 2. The `scrapers/browser.py` base +
 `config/airport_tz.py` are vendored from
 `points-pilot-scrapers`. Scraped rows are written to `pp.flights` in Supabase Postgres via the
 vendored `pp_db` layer (`browser_scrape_common`'s `upsert_flights` + its freshness-snapshot probe
