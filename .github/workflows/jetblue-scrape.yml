@@ -40,5 +40,6 @@ jobs:
           JETBLUE_SHARDS: "1"
           JETBLUE_MAX_LEGS_PER_SHARD: "1"
           JETBLUE_SHARD_INDEX: ${{ matrix.shard }}
-          # 3-month horizon (dense 0-14d / sparse to 30d / weekly coarse tail to 90d ≈ 29 dates).
-          JETBLUE_SCRAPE_DAYS: "90"
+          # One-date canary while JetBlue returns HTTP 406: keep daily visibility without enough
+          # consecutive blocked responses to trip the run-level circuit breaker.
+          JETBLUE_SCRAPE_DAYS: "1"

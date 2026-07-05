@@ -25,7 +25,7 @@ def test_jetblue_workflow_runs_daily_probe_while_blocked():
 
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
-    """JetBlue stays in one-shard probe mode while 406 blocks are 100%."""
+    """JetBlue uses a one-shard, one-date daily probe while HTTP 406 remains blocked."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -34,5 +34,8 @@ def test_jetblue_workflow_shard_matrix_is_consistent():
     n = int(env["JETBLUE_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(JETBLUE_SHARDS={n})"
     assert n == 1, "JetBlue runs one daily probe shard while HTTP 406 blocked"
+    assert (
+        env["JETBLUE_SCRAPE_DAYS"] == "1"
+    ), "JetBlue uses one-date probes while HTTP 406 is blocked"
     assert env["JETBLUE_MAX_LEGS_PER_SHARD"] == "1"
     assert env["JETBLUE_SHARD_INDEX"] == "${{ matrix.shard }}"
