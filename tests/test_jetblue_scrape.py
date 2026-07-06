@@ -11,21 +11,25 @@ def test_jetblue_scrape_imports_and_configures():
     assert JetBlueScraper.airline_code == "B6"
 
 
-def test_jetblue_workflow_runs_daily_probe_while_blocked():
-    """JetBlue is currently 100% blocked on GitHub Actions HTTP 406, so keep a daily low-rate
+def test_jetblue_workflow_runs_weekly_probe_while_blocked():
+    """JetBlue is currently 100% blocked on GitHub Actions HTTP 406, so keep a weekly low-rate
     health probe instead of three 5-shard coverage pushes."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     # PyYAML parses the bare `on:` key as the boolean True.
     schedule = wf[True]["schedule"]
     crons = [s["cron"] for s in schedule]
-    assert crons == ["37 20 * * *"]
-    hour = int(crons[0].split()[1])
+    assert crons == ["37 20 * * 0"]
+    minute, hour, _dom, _month, dow = crons[0].split()
+    assert minute == "37"
+    assert hour == "20"
+    assert dow == "0"
+    hour = int(hour)
     assert not (8 <= hour <= 11), "cron must avoid the 08–11 UTC award block"
 
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
-    """JetBlue uses a one-shard, one-route, one-date daily probe while HTTP 406 remains blocked."""
+    """JetBlue uses a one-shard, one-route, one-date weekly probe while HTTP 406 remains blocked."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -33,7 +37,7 @@ def test_jetblue_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["JETBLUE_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(JETBLUE_SHARDS={n})"
-    assert n == 1, "JetBlue runs one-shard daily probe while HTTP 406 blocked"
+    assert n == 1, "JetBlue runs one-shard weekly probe while HTTP 406 blocked"
     assert (
         env["JETBLUE_SCRAPE_DAYS"] == "1"
     ), "JetBlue uses one-date probes while HTTP 406 is blocked"
