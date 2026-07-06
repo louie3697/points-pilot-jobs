@@ -29,7 +29,7 @@ def test_jetblue_workflow_runs_weekly_probe_while_blocked():
 
 
 def test_jetblue_workflow_shard_matrix_is_consistent():
-    """JetBlue uses a one-shard, one-route, one-date daily probe while HTTP 406 remains blocked."""
+    """JetBlue uses a one-shard, one-route, one-date weekly probe while HTTP 406 remains blocked."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     job = wf["jobs"]["scrape"]
@@ -37,7 +37,7 @@ def test_jetblue_workflow_shard_matrix_is_consistent():
     env = job["steps"][-1]["env"]
     n = int(env["JETBLUE_SHARDS"])
     assert shards == list(range(n)), f"matrix {shards} must be range(JETBLUE_SHARDS={n})"
-    assert n == 1, "JetBlue runs one-shard daily probe while HTTP 406 blocked"
+    assert n == 1, "JetBlue runs one-shard weekly probe while HTTP 406 blocked"
     assert (
         env["JETBLUE_SCRAPE_DAYS"] == "1"
     ), "JetBlue uses one-date probes while HTTP 406 is blocked"

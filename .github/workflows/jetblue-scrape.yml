@@ -40,6 +40,6 @@ jobs:
           JETBLUE_SHARDS: "1"
           JETBLUE_MAX_LEGS_PER_SHARD: "1"
           JETBLUE_SHARD_INDEX: ${{ matrix.shard }}
-          # One-date canary while JetBlue returns HTTP 406: keep daily visibility without enough
+          # One-date canary while JetBlue returns HTTP 406: keep weekly visibility without enough
           # consecutive blocked responses to trip the run-level circuit breaker.
           JETBLUE_SCRAPE_DAYS: "1"
