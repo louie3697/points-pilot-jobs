@@ -11,16 +11,20 @@ def test_jetblue_scrape_imports_and_configures():
     assert JetBlueScraper.airline_code == "B6"
 
 
-def test_jetblue_workflow_runs_daily_probe_while_blocked():
-    """JetBlue is currently 100% blocked on GitHub Actions HTTP 406, so keep a daily low-rate
+def test_jetblue_workflow_runs_weekly_probe_while_blocked():
+    """JetBlue is currently 100% blocked on GitHub Actions HTTP 406, so keep a weekly low-rate
     health probe instead of three 5-shard coverage pushes."""
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     # PyYAML parses the bare `on:` key as the boolean True.
     schedule = wf[True]["schedule"]
     crons = [s["cron"] for s in schedule]
-    assert crons == ["37 20 * * *"]
-    hour = int(crons[0].split()[1])
+    assert crons == ["37 20 * * 0"]
+    minute, hour, _dom, _month, dow = crons[0].split()
+    assert minute == "37"
+    assert hour == "20"
+    assert dow == "0"
+    hour = int(hour)
     assert not (8 <= hour <= 11), "cron must avoid the 08–11 UTC award block"
 
 

@@ -3,9 +3,9 @@ name: JetBlue award scrape
 on:
   workflow_dispatch:
   schedule:
-    # 1×/day probe while JetBlue is 100% blocked on GH-Actions HTTP 406 — low-rate health checks
-    # only, then resume shard expansion after the block clears.
-    - cron: "37 20 * * *"
+    # Weekly one-route/one-date canary while JetBlue returns HTTP 406. Manual dispatch stays
+    # available for unblock checks without burning a known-failing scheduled request every day.
+    - cron: "37 20 * * 0"
 
 permissions:
   contents: read
