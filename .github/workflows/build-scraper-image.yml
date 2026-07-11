@@ -30,7 +30,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/louie2074/points-pilot-jobs-scraper
+          images: ghcr.io/louie3697/points-pilot-jobs-scraper
           tags: |
             type=raw,value=latest
             type=sha

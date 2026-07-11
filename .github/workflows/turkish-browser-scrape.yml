@@ -35,7 +35,7 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/louie2074/points-pilot-jobs-scraper:latest
+      image: ghcr.io/louie3697/points-pilot-jobs-scraper:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
