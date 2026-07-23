@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import date
 
 import pytest
@@ -141,6 +142,68 @@ def test_normalize_classifies_unsuccessful_envelope_and_option_failures(raw, cat
     assert "secret-body" not in diagnostic
     assert "not-a-list" not in diagnostic
     assert "not-a-map" not in diagnostic
+
+
+def test_response_diagnostic_reports_only_bounded_contract_shape(monkeypatch):
+    payload = {
+        "zKey": 1,
+        "success": False,
+        "statusCode": 451,
+        "status": "ERROR",
+        "message": "provider-message-must-not-appear",
+        "errorCode": "TK_AVAIL_42",
+        "data": None,
+    }
+    wire = json.dumps({"kind": "response", "status": 503, "text": json.dumps(payload)})
+    raw = _fetch_result(monkeypatch, wire)
+
+    with pytest.raises(TurkishResponseError) as exc:
+        TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
+
+    diagnostic = str(exc.value)
+    assert "category=unsuccessful" in diagnostic
+    assert "http_status=503" in diagnostic
+    assert "keys=[data,errorCode,message,status,statusCode,success,zKey]" in diagnostic
+    assert "data_type=NoneType" in diagnostic
+    assert "provider=[errorCode=TK_AVAIL_42,status=ERROR,statusCode=451]" in diagnostic
+    assert "provider-message-must-not-appear" not in diagnostic
+
+
+def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monkeypatch, caplog):
+    markers = {
+        "provider_message": "MESSAGE_SECRET_MARKER",
+        "body": "BODY_SECRET_MARKER",
+        "header": "HEADER_SECRET_MARKER",
+        "cookie": "COOKIE_SECRET_MARKER",
+        "nested": "NESTED_SECRET_MARKER",
+        "request": "REQUEST_SECRET_MARKER",
+        "uuid": "123e4567-e89b-12d3-a456-426614174000",
+    }
+    payload = {
+        "success": False,
+        "data": {"deep": {"value": markers["nested"]}},
+        "message": markers["provider_message"],
+        "body": markers["body"],
+        "headers": {"Authorization": markers["header"]},
+        "cookies": markers["cookie"],
+        "requestData": {"payload": markers["request"]},
+        "requestId": markers["uuid"],
+        "errorCode": "TK_BLOCKED",
+    }
+    wire = json.dumps({"kind": "response", "status": 429, "text": json.dumps(payload)})
+    raw = _fetch_result(monkeypatch, wire)
+
+    with pytest.raises(TurkishResponseError) as exc:
+        TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
+
+    with caplog.at_level(logging.WARNING, logger="test-turkish-diagnostic"):
+        logging.getLogger("test-turkish-diagnostic").warning("Turkish failed: %s", exc.value)
+
+    rendered = f"{exc.value}\n{caplog.text}"
+    for marker in markers.values():
+        assert marker not in rendered
+    assert "errorCode=TK_BLOCKED" in rendered
+    assert len(str(exc.value)) <= 320
 
 
 class _EvaluateTab:
