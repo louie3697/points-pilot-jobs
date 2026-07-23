@@ -25,7 +25,7 @@ def test_alaska_workflow_shard_matrix_is_consistent():
     assert shards == list(range(n)), f"matrix {shards} must be range(ALASKA_SHARDS={n})"
     assert n == 5, "Alaska runs 5 fresh-IP shards after the July 2026 queue-drain bump"
     assert env["ALASKA_SHARD_INDEX"] == "${{ matrix.shard }}"
-    assert env["ALASKA_MAX_ROUTES_PER_SHARD"] == "8"
+    assert env["ALASKA_MAX_LEGS_PER_SHARD"] == "8"
 
 
 def test_alaska_workflow_runs_four_times_daily_with_safe_spacing():

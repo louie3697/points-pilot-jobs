@@ -28,7 +28,7 @@ def test_delta_workflow_shard_matrix_is_consistent():
     assert shards == list(range(n)), f"matrix {shards} must be range(DELTA_SHARDS={n})"
     assert n == 1, "scheduled Delta is a single low-cost recovery probe"
     assert env["DELTA_SHARD_INDEX"] == "${{ matrix.shard }}"
-    assert env["DELTA_MAX_ROUTES_PER_SHARD"] == "1"
+    assert env["DELTA_MAX_LEGS_PER_SHARD"] == "1"
     assert env["CRON_TIME_BUDGET_S"] == "7200"
 
 

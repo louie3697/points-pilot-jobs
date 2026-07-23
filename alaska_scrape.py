@@ -27,9 +27,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alaska_scrape")
 
-MAX_LEGS_PER_SHARD = int(
-    os.getenv("ALASKA_MAX_ROUTES_PER_SHARD", str(CRON_MAX_LEGS_PER_SHARD["alaska"]))
-)
+MAX_LEGS_PER_SHARD = CRON_MAX_LEGS_PER_SHARD["alaska"]
 SCRAPE_DAYS = int(os.getenv("ALASKA_SCRAPE_DAYS", "30"))  # full horizon; dense near + sparse tail
 SHARDS = max(1, int(os.getenv("ALASKA_SHARDS", "1")))
 SHARD_INDEX = int(os.getenv("ALASKA_SHARD_INDEX", "0"))

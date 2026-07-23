@@ -60,7 +60,7 @@ jobs:
           CRON_TIME_BUDGET_S: "7200"
           DELTA_SHARDS: "1"
           DELTA_SHARD_INDEX: ${{ matrix.shard }}
-          DELTA_MAX_ROUTES_PER_SHARD: "1"
+          DELTA_MAX_LEGS_PER_SHARD: "1"
           DELTA_ROUTE_ORIGIN: ${{ inputs.origin }}
           DELTA_ROUTE_DEST: ${{ inputs.destination }}
           DELTA_ROUTE_DATES: ${{ inputs.dates }}

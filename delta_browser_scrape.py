@@ -6,7 +6,7 @@ near-term date window via one warmed Chrome session (in-page availability fetch 
 ``scrapers/delta.py``), normalizes, and upserts into Postgres ``pp.flights``, then exits. Suitable
 for a manual workflow_dispatch or a cron. Tunable via env: DELTA_SCRAPE_DAYS (default 5);
 single-route on-demand mode via DELTA_ROUTE_ORIGIN/DEST/DATES; cron sharding via DELTA_SHARDS /
-DELTA_SHARD_INDEX (Delta's ~27-leg Akamai ceiling → the cron shards across parallel runner IPs).
+DELTA_SHARD_INDEX. While HTTP 444 persists, the scheduled workflow is a one-route recovery probe.
 
 The run plan + scrape loop + metric + heartbeat are shared — see ``browser_scrape_common.py``.
 """
@@ -32,9 +32,7 @@ logger = logging.getLogger("delta_browser_scrape")
 
 # Cron routes now live in config/routes.py (seeded into the scored queue via seed_from_config);
 # the daily cron drains the scored due-batch instead of a static list.
-MAX_LEGS_PER_SHARD = int(
-    os.getenv("DELTA_MAX_ROUTES_PER_SHARD", str(CRON_MAX_LEGS_PER_SHARD["delta"]))
-)
+MAX_LEGS_PER_SHARD = CRON_MAX_LEGS_PER_SHARD["delta"]
 SCRAPE_DAYS = int(os.getenv("DELTA_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
 # On-demand single-route mode (set by the workflow_dispatch inputs). Empty in the daily cron.

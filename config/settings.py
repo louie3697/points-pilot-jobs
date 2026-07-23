@@ -172,9 +172,9 @@ CADENCE_STEP_H: dict[str, int] = {
 
 # Cron per-shard leg cap (directed routes per shard per run). Each shard runs on a FRESH
 # GH-Actions runner IP, so this is the per-shard (per-IP, per-session) limit, sized below each
-# airline's per-session WAF ceiling — NOT a budget shared across shards. Delta's ceiling is ~27
-# directed legs/session (a live run blocked on leg 28); 18 keeps a ~10-leg margin × 3 shards =
-# 54 legs/day. Env-overridable so it can be dialed back from the `blocked` metric without a deploy.
+# airline's per-session WAF ceiling — NOT a budget shared across shards. These are fallback values;
+# workflows can explicitly lower an airline via `<AIRLINE>_MAX_LEGS_PER_SHARD` for recovery probes
+# or runner-budget sizing.
 CRON_MAX_LEGS_PER_SHARD: dict[str, int] = {
     "delta": int(_get("DELTA_MAX_LEGS_PER_SHARD", "18")),
     # Southwest's F5/Shape WAF blocks by IP REPUTATION, not leg count: ~2/3 of GH-Actions Azure IPs
@@ -186,10 +186,8 @@ CRON_MAX_LEGS_PER_SHARD: dict[str, int] = {
     "southwest": int(_get("SOUTHWEST_MAX_LEGS_PER_SHARD", "20")),
     "turkish": int(_get("TURKISH_MAX_LEGS_PER_SHARD", "20")),
     "etihad": int(_get("ETIHAD_MAX_LEGS_PER_SHARD", "20")),
-    # Alaska: 115 MED pairs (230 directed legs after the POI-20 lever #3 partner-business intl
-    # expansion). 40/shard × 3 shards = 120 candidate pool/run; the 3×/day cron + never-scraped
-    # floor (queue_manager.get_due_batch) drains the catalogue with margin. httpx headroom is wide
-    # (40 legs × 29 dates ≈ 1160 req/IP/run runs clean — Azure probe 0 blocks).
+    # Alaska workflows currently override this fallback to 8 so five shards finish within the
+    # 45-minute runner budget; unreached queue work stays due for the next of four daily slots.
     "alaska": int(_get("ALASKA_MAX_LEGS_PER_SHARD", "40")),
     # JetBlue: 46 MED pairs (92 directed legs after the Mint business expansion, POI-20 lever #3).
     # 36/shard × 4 shards = 144 candidate pool/run covers the 92 directed set plus the LOW
