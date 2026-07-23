@@ -1,7 +1,9 @@
+import logging
 from datetime import date
 
 import pytest
 
+import browser_scrape_common as common
 from scrapers.delta import DeltaScraper, _brand_to_cabin, _most_premium_cabin
 
 
@@ -253,3 +255,42 @@ def test_normalize_domestic_first_stays_first():
 def test_normalize_null_response_returns_empty(raw):
     recs = DeltaScraper().normalize(raw, "SEA", "LAX", date(2026, 7, 23))
     assert recs == []
+
+
+def test_single_444_response_reports_blocked_without_success_heartbeat(monkeypatch):
+    scraper = DeltaScraper()
+    metrics = []
+    heartbeats = []
+
+    async def fake_ensure_browser():
+        return object()
+
+    async def fake_page_fetch(*_args, **_kwargs):
+        return scraper._check_blocked({"status": 444, "text": ""})
+
+    monkeypatch.setattr(scraper, "_ensure_browser", fake_ensure_browser)
+    monkeypatch.setattr(scraper, "_page_fetch", fake_page_fetch)
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda metric: metrics.append(metric))
+    monkeypatch.setattr(common, "freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
+    monkeypatch.setattr(
+        common, "ping_heartbeat", lambda url, logger: heartbeats.append(url)
+    )
+
+    outcome = common.run_scrape(
+        scraper,
+        [("ATL", "LAX")],
+        [date(2026, 7, 23)],
+        source="delta",
+        service="point-pilot-delta",
+        airline="DL",
+        heartbeat_url="https://heartbeat.invalid/delta",
+        logger=logging.getLogger("test-delta-block"),
+    )
+
+    assert outcome.status == "blocked"
+    assert outcome.exit_code == 1
+    assert scraper._consecutive_blocks == 1
+    assert metrics[0]["status"] == "blocked"
+    assert metrics[0]["blocked"] is True
+    assert heartbeats == []

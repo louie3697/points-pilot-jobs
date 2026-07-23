@@ -5,6 +5,8 @@ from datetime import date
 
 import pytest
 
+import browser_scrape_common as common
+from scrapers.base import ScraperBlockedError
 from scrapers.turkish import (
     TurkishResponseError,
     TurkishScraper,
@@ -204,6 +206,106 @@ def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monke
         assert marker not in rendered
     assert "errorCode=TK_BLOCKED" in rendered
     assert len(str(exc.value)) <= 320
+
+
+def _perimeterx_block_payload() -> tuple[dict, list[str]]:
+    values = [
+        "ALT_SCRIPT_SECRET",
+        "APP_ID_SECRET",
+        "BLOCK_SCRIPT_SECRET",
+        "CUSTOM_LOGO_SECRET",
+        "HOST_URL_SECRET",
+        "JS_CLIENT_SECRET",
+        "123e4567-e89b-12d3-a456-426614174000",
+        "VID_SECRET",
+    ]
+    return (
+        {
+            "altBlockScript": values[0],
+            "appId": values[1],
+            "blockScript": values[2],
+            "customLogo": values[3],
+            "firstPartyEnabled": True,
+            "hostUrl": values[4],
+            "jsClientSrc": values[5],
+            "uuid": values[6],
+            "vid": values[7],
+        },
+        values,
+    )
+
+
+def test_http_403_perimeterx_envelope_raises_shared_block_error(monkeypatch):
+    payload, secret_values = _perimeterx_block_payload()
+    wire = json.dumps({"kind": "response", "status": 403, "text": json.dumps(payload)})
+    raw = _fetch_result(monkeypatch, wire)
+
+    with pytest.raises(ScraperBlockedError) as exc:
+        TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
+
+    rendered = str(exc.value)
+    assert "PerimeterX" in rendered
+    for value in secret_values:
+        assert value not in rendered
+
+
+def test_http_403_perimeterx_envelope_reports_blocked_run_without_secret_logs(
+    monkeypatch, caplog
+):
+    payload, secret_values = _perimeterx_block_payload()
+    wire = json.dumps({"kind": "response", "status": 403, "text": json.dumps(payload)})
+    raw = _fetch_result(monkeypatch, wire)
+    metrics = []
+    heartbeats = []
+    scraper = TurkishScraper()
+
+    monkeypatch.setattr(
+        scraper,
+        "scrape",
+        lambda origin, dest, travel: scraper.normalize(raw, origin, dest, travel),
+    )
+    monkeypatch.setattr(scraper, "close", lambda: None)
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda metric: metrics.append(metric))
+    monkeypatch.setattr(common, "freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
+    monkeypatch.setattr(
+        common, "ping_heartbeat", lambda url, logger: heartbeats.append(url)
+    )
+
+    with caplog.at_level(logging.WARNING):
+        outcome = common.run_scrape(
+            scraper,
+            [("JFK", "IST")],
+            [TRAVEL],
+            source="turkish",
+            service="point-pilot-turkish",
+            airline="TK",
+            heartbeat_url="https://heartbeat.invalid/turkish",
+            logger=logging.getLogger("test-turkish-block"),
+        )
+
+    assert outcome.status == "blocked"
+    assert outcome.exit_code == 1
+    assert metrics[0]["status"] == "blocked"
+    assert metrics[0]["blocked"] is True
+    assert heartbeats == []
+    for value in secret_values:
+        assert value not in caplog.text
+
+
+def test_non_2xx_valid_shaped_response_is_bounded_http_error(monkeypatch):
+    payload = _resp([_opt()])
+    payload["message"] = "NON_2XX_BODY_SECRET"
+    wire = json.dumps({"kind": "response", "status": 503, "text": json.dumps(payload)})
+    raw = _fetch_result(monkeypatch, wire)
+
+    with pytest.raises(TurkishResponseError) as exc:
+        TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
+
+    assert exc.value.category == "http_error"
+    diagnostic = str(exc.value)
+    assert "http_status=503" in diagnostic
+    assert "NON_2XX_BODY_SECRET" not in diagnostic
 
 
 class _EvaluateTab:

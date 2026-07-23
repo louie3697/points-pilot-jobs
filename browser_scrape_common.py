@@ -182,15 +182,23 @@ def ping_heartbeat(url: str, logger: logging.Logger) -> None:
 
 
 def freshness(source: str, logger: logging.Logger) -> dict:
-    """``{<source>_rows, <source>_newest_age_h}`` snapshot for the metric. Best-effort/no-raise."""
+    """Bounded source-row freshness snapshot for the metric. Best-effort/no-raise.
+
+    The existing total-row and newest-age fields remain stable for dashboards. The unexpired-row
+    count is the authoritative idle-heartbeat signal because source TTLs vary per stamped row.
+    """
     try:
         from sqlalchemy import text
 
         from pp_db.engine import get_engine
 
         with get_engine().connect() as c:
-            total, newest = c.execute(
-                text("SELECT count(*), max(scraped_at_utc) FROM pp.flights WHERE source = :source"),
+            total, newest, unexpired = c.execute(
+                text(
+                    "SELECT count(*), max(scraped_at_utc), "
+                    "count(*) FILTER (WHERE expires_at_utc > now()) "
+                    "FROM pp.flights WHERE source = :source"
+                ),
                 {"source": source},
             ).fetchone()
         age_h = None
@@ -198,25 +206,23 @@ def freshness(source: str, logger: logging.Logger) -> dict:
             if newest.tzinfo is None:
                 newest = newest.replace(tzinfo=timezone.utc)
             age_h = round((datetime.now(timezone.utc) - newest).total_seconds() / 3600, 1)
-        return {f"{source}_rows": int(total or 0), f"{source}_newest_age_h": age_h}
+        return {
+            f"{source}_rows": int(total or 0),
+            f"{source}_newest_age_h": age_h,
+            f"{source}_unexpired_rows": int(unexpired or 0),
+        }
     except Exception as exc:  # noqa: BLE001
         logger.warning("freshness snapshot failed: %s", exc)
         return {}
 
 
 def _has_fresh_source_data(snapshot: dict, source: str) -> bool:
-    """Whether the bounded freshness snapshot proves this award source still has accepted data."""
-    from config.settings import TTL_HOURS
-
-    rows = snapshot.get(f"{source}_rows")
-    newest_age_h = snapshot.get(f"{source}_newest_age_h")
+    """Whether the snapshot proves this source has rows whose stamped expiry is in the future."""
+    unexpired_rows = snapshot.get(f"{source}_unexpired_rows")
     return (
-        isinstance(rows, int)
-        and not isinstance(rows, bool)
-        and rows > 0
-        and isinstance(newest_age_h, (int, float))
-        and not isinstance(newest_age_h, bool)
-        and newest_age_h <= max(TTL_HOURS.values())
+        isinstance(unexpired_rows, int)
+        and not isinstance(unexpired_rows, bool)
+        and unexpired_rows > 0
     )
 
 
@@ -435,7 +441,7 @@ def run_scrape(
     )
     # A healthy process is not enough to claim ingestion health. Ping only after this run validated
     # at least one response (including valid-empty), or when the same bounded metric snapshot proves
-    # that the source already has rows within the accepted award freshness window.
+    # that the source already has at least one row whose stamped expiry is still in the future.
     if status == "healthy" and (
         routes_with_progress > 0 or _has_fresh_source_data(freshness_snapshot, source)
     ):

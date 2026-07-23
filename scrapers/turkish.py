@@ -34,7 +34,7 @@ from zoneinfo import ZoneInfo
 
 from config.airport_tz import AIRPORT_TZ
 from config.settings import TTL_HOURS, PriorityTier
-from scrapers.base import FlightRecord
+from scrapers.base import FlightRecord, ScraperBlockedError
 from scrapers.browser import BrowserScraper
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,19 @@ _UUID = re.compile(
 )
 _PROVIDER_FIELDS = ("code", "errorCode", "errorStatus", "status", "statusCode")
 _SECRET_HINTS = ("secret", "token", "bearer", "cookie", "authorization", "password")
+_PERIMETERX_BLOCK_KEYS = frozenset(
+    {
+        "altBlockScript",
+        "appId",
+        "blockScript",
+        "customLogo",
+        "firstPartyEnabled",
+        "hostUrl",
+        "jsClientSrc",
+        "uuid",
+        "vid",
+    }
+)
 
 
 def _safe_primitive(value: object) -> str | None:
@@ -120,6 +133,11 @@ class TurkishResponseError(RuntimeError):
             if provider:
                 parts.append(f"provider=[{','.join(provider)}]")
         super().__init__(f"Turkish response failure ({', '.join(parts)})"[:320])
+
+
+def _is_perimeterx_block_envelope(payload: dict, status: object) -> bool:
+    """Match only the controlled 403 envelope observed from Turkish's PerimeterX edge."""
+    return status == 403 and frozenset(payload) == _PERIMETERX_BLOCK_KEYS
 
 
 def _parse_tk_dt(s: object, iata: str) -> datetime | None:
@@ -288,6 +306,11 @@ class TurkishScraper(BrowserScraper):
         status = getattr(raw, "http_status", None)
         if not isinstance(raw, dict):
             raise TurkishResponseError("missing_envelope", status=status)
+        if _is_perimeterx_block_envelope(raw, status):
+            raise ScraperBlockedError("Turkish PerimeterX block envelope (status=403)")
+        if isinstance(status, int) and not 200 <= status < 300:
+            category = "unsuccessful" if raw.get("success") is False else "http_error"
+            raise TurkishResponseError(category, status=status, payload=raw)
         if raw.get("success") is False:
             raise TurkishResponseError("unsuccessful", status=status, payload=raw)
         data = raw.get("data")
