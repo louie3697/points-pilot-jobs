@@ -115,9 +115,10 @@ class JetBlueScraper(HttpScraper):
         "Referer": "https://www.jetblue.com/booking/flights",
     }
 
-    # Extra-conservative while we validate the cURL + parsing; ramp up once proven.
+    # The scheduled health canary makes only one request. Treat its first WAF response as a
+    # run-level block so a 403/406 cannot be mistaken for a valid empty result.
     min_delay_s = 12.0
-    block_threshold = 4
+    block_threshold = 1
     refresh_interval_min = 180
     scrape_days_ahead = 30
     dense_days = 10
