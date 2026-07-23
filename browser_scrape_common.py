@@ -204,6 +204,22 @@ def freshness(source: str, logger: logging.Logger) -> dict:
         return {}
 
 
+def _has_fresh_source_data(snapshot: dict, source: str) -> bool:
+    """Whether the bounded freshness snapshot proves this award source still has accepted data."""
+    from config.settings import TTL_HOURS
+
+    rows = snapshot.get(f"{source}_rows")
+    newest_age_h = snapshot.get(f"{source}_newest_age_h")
+    return (
+        isinstance(rows, int)
+        and not isinstance(rows, bool)
+        and rows > 0
+        and isinstance(newest_age_h, (int, float))
+        and not isinstance(newest_age_h, bool)
+        and newest_age_h <= max(TTL_HOURS.values())
+    )
+
+
 def _tier_for_job(job, default: str) -> str:
     """The expiry tier for a scraped route: the queue RouteJob's adaptive tier in cron mode,
     or `default` for on-demand _PairJobs (which have no .tier). Fixes the prior flat-MED stamp
@@ -392,6 +408,7 @@ def run_scrape(
     )
 
     duration_s = round(time.monotonic() - started, 1)
+    freshness_snapshot = freshness(source, logger)
     ship_metric(
         {
             "event": "scrape_run",
@@ -413,12 +430,15 @@ def run_scrape(
             "queue_selected_routes": queue_selected_routes,
             "queue_left_due_estimate": queue_left_due_estimate,
             "queue_fill_ratio": queue_fill_ratio,
-            **freshness(source, logger),
+            **freshness_snapshot,
         }
     )
-    # Idle on-demand matrix shards are healthy exit-0 no-ops, but cannot prove the requested
-    # scrape succeeded. Cron queue mode may ping with no due work to prove its scheduler ran.
-    if status == "healthy" and (queue_mode or routes_with_progress > 0):
+    # A healthy process is not enough to claim ingestion health. Ping only after this run validated
+    # at least one response (including valid-empty), or when the same bounded metric snapshot proves
+    # that the source already has rows within the accepted award freshness window.
+    if status == "healthy" and (
+        routes_with_progress > 0 or _has_fresh_source_data(freshness_snapshot, source)
+    ):
         ping_heartbeat(heartbeat_url, logger)
     logger.info(
         "=== done — status=%s %d %s records "
