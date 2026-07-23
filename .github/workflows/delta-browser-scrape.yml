@@ -4,8 +4,8 @@ name: delta-browser-scrape
 # Akamai edge block — HTTP 200 — where Fly's IP gets 444). The scrapers/ config/ pp_db/ pipeline/
 # packages are VENDORED from points-pilot-scrapers (see VENDORED_DELTA.md), so no cross-repo
 # checkout / PAT is needed. Headful Chrome under xvfb (Akamai challenges headless). Writes Delta
-# rows into Postgres `flights`. Delta now runs 7 shards across 3 scheduled slots to drain the
-# larger queue without changing shard count.
+# rows into Postgres `flights`. While Delta returns HTTP 444, scheduled work is a single daily,
+# one-route recovery probe. Manual single-route dispatch remains available.
 on:
   workflow_dispatch:
     inputs:
@@ -22,9 +22,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 2 * * *"   # 3rd daily run adds queue-drain capacity while keeping expected overlap under the documented 20-job ceiling
-    - cron: "0 8 * * *"   # daily at 08:00 UTC (clear of transfer-bonuses 09:00)
-    - cron: "0 20 * * *"  # evening run halves Delta's effective TTL
+    - cron: "0 8 * * *"  # one daily recovery probe while HTTP 444 persists
 
 permissions:
   contents: read
@@ -47,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6]
+        shard: [0]
     steps:
       - uses: actions/checkout@v6
       - name: Scrape Delta (headful Chrome under xvfb, Azure IP)
@@ -60,8 +58,9 @@ jobs:
           DELTA_HEARTBEAT_URL: ${{ secrets.DELTA_HEARTBEAT_URL }}
           DELTA_SCRAPE_DAYS: "90"
           CRON_TIME_BUDGET_S: "7200"
-          DELTA_SHARDS: "7"
+          DELTA_SHARDS: "1"
           DELTA_SHARD_INDEX: ${{ matrix.shard }}
+          DELTA_MAX_ROUTES_PER_SHARD: "1"
           DELTA_ROUTE_ORIGIN: ${{ inputs.origin }}
           DELTA_ROUTE_DEST: ${{ inputs.destination }}
           DELTA_ROUTE_DATES: ${{ inputs.dates }}

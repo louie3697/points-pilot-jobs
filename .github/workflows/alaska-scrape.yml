@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # 4x/day, offset to :17 and clear of the 08-11 UTC award-browser block. Alaska keeps
-    # 5 shards and adds a 07:17 UTC run to reduce due-route queue wait.
+    # 5 shards; each shard is capped at 8 routes to finish within the runner budget.
     - cron: "17 1,7,13,19 * * *"
 
 permissions:
@@ -39,6 +39,7 @@ jobs:
           ALASKA_HEARTBEAT_URL: ${{ secrets.ALASKA_HEARTBEAT_URL }}
           ALASKA_SHARDS: "5"
           ALASKA_SHARD_INDEX: ${{ matrix.shard }}
+          ALASKA_MAX_ROUTES_PER_SHARD: "8"
           # 3-month horizon (dense 0-14d / sparse to 30d / weekly coarse tail to 90d ≈ 29 dates).
           # Alaska carries the international partner award space Explore surfaces; httpx is cheap.
           ALASKA_SCRAPE_DAYS: "90"

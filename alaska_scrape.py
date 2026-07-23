@@ -27,13 +27,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("alaska_scrape")
 
-MAX_LEGS_PER_SHARD = CRON_MAX_LEGS_PER_SHARD["alaska"]
+MAX_LEGS_PER_SHARD = int(
+    os.getenv("ALASKA_MAX_ROUTES_PER_SHARD", str(CRON_MAX_LEGS_PER_SHARD["alaska"]))
+)
 SCRAPE_DAYS = int(os.getenv("ALASKA_SCRAPE_DAYS", "30"))  # full horizon; dense near + sparse tail
 SHARDS = max(1, int(os.getenv("ALASKA_SHARDS", "1")))
 SHARD_INDEX = int(os.getenv("ALASKA_SHARD_INDEX", "0"))
 
 
-def _run_cron(shard_index: int, shards: int) -> None:
+def _run_cron(shard_index: int, shards: int) -> common.ScrapeOutcome:
     """Drain this shard's slice of the scored queue over the dense/sparse window."""
     from scrapers.alaska import AlaskaScraper
 
@@ -49,14 +51,14 @@ def _run_cron(shard_index: int, shards: int) -> None:
         "Cron queue mode (shard %d/%d): %d due routes × %d dates",
         shard_index, shards, len(route_jobs), len(dates),
     )
-    common.run_scrape(
+    return common.run_scrape(
         scraper, [], dates,
         source="alaska", service="point-pilot-alaska", airline="AS",
         heartbeat_url=ALASKA_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )
 
 
-def main() -> None:
+def main() -> common.ScrapeOutcome:
     try:
         from config.settings import PriorityTier  # noqa: F401 — triggers env validation
     except RuntimeError as exc:
@@ -69,10 +71,10 @@ def main() -> None:
     install_log_shipping("point-pilot-alaska")
     migrate()  # idempotent; no-op on prod
     logger.info("Schema ready")
-    _run_cron(SHARD_INDEX, SHARDS)
+    return _run_cron(SHARD_INDEX, SHARDS)
 
 
 if __name__ == "__main__":
-    main()
+    outcome = main()
     # Parity with the browser entrypoints' hard-exit convention; harmless for httpx.
-    flush_then_hard_exit()
+    flush_then_hard_exit(outcome.exit_code)

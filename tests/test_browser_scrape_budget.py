@@ -40,15 +40,21 @@ def _stub_io(monkeypatch):
     metrics: list[dict] = []
     monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
     monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+    heartbeats: list[str] = []
+    monkeypatch.setattr(
+        common,
+        "ping_heartbeat",
+        lambda url, _logger: heartbeats.append(url),
+    )
     monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
-    return metrics
+    return metrics, heartbeats
 
 
 def test_run_scrape_stops_before_scraping_when_budget_exhausted(monkeypatch):
-    metrics = _stub_io(monkeypatch)
+    metrics, heartbeats = _stub_io(monkeypatch)
     scraper = _FakeScraper()
 
-    total = common.run_scrape(
+    outcome = common.run_scrape(
         scraper,
         [("SEA", "JFK"), ("LAX", "BOS")],
         [date(2026, 7, 1)],
@@ -61,17 +67,22 @@ def test_run_scrape_stops_before_scraping_when_budget_exhausted(monkeypatch):
     )
 
     assert scraper.calls == 0  # no route scraped
-    assert total == 0
+    assert outcome.records == 0
+    assert outcome.due_routes == 2
+    assert outcome.status == "partial"
+    assert outcome.exit_code == 0
     assert metrics, "scrape_run metric must still ship on a budget stop"
     assert metrics[0]["routes_scraped"] == 0
     assert metrics[0]["stopped_early"] is True
+    assert metrics[0]["status"] == "partial"
+    assert heartbeats == []
 
 
 def test_run_scrape_completes_all_routes_within_generous_budget(monkeypatch):
-    metrics = _stub_io(monkeypatch)
+    metrics, heartbeats = _stub_io(monkeypatch)
     scraper = _FakeScraper()
 
-    common.run_scrape(
+    outcome = common.run_scrape(
         scraper,
         [("SEA", "JFK"), ("LAX", "BOS")],
         [date(2026, 7, 1)],
@@ -86,10 +97,14 @@ def test_run_scrape_completes_all_routes_within_generous_budget(monkeypatch):
     assert scraper.calls == 2  # both routes scraped
     assert metrics[0]["routes_scraped"] == 2
     assert metrics[0]["stopped_early"] is False
+    assert metrics[0]["status"] == "healthy"
+    assert outcome.status == "healthy"
+    assert outcome.exit_code == 0
+    assert heartbeats == [""]
 
 
 def test_run_scrape_metric_counts_zero_record_routes(monkeypatch):
-    metrics = _stub_io(monkeypatch)
+    metrics, _heartbeats = _stub_io(monkeypatch)
     scraper = _FakeScraper()
 
     common.run_scrape(
@@ -113,7 +128,7 @@ def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monk
     import pipeline.queue_manager as queue_manager
     from scrapers.base import ScraperBlockedError
 
-    metrics = _stub_io(monkeypatch)
+    metrics, heartbeats = _stub_io(monkeypatch)
     blocked_calls: list[tuple[str, str, str, int]] = []
 
     class _BlockingScraper:
@@ -143,7 +158,7 @@ def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monk
         )
     ]
 
-    common.run_scrape(
+    outcome = common.run_scrape(
         _BlockingScraper(),
         [],
         [date(2026, 7, 1)],
@@ -166,3 +181,110 @@ def test_run_scrape_queue_mode_blocked_route_sets_backoff_and_metric_fields(monk
     assert metrics[0]["queue_left_due_estimate"] == 3
     assert metrics[0]["queue_fill_ratio"] == 0.25
     assert metrics[0]["routes_zero"] == 0
+    assert metrics[0]["status"] == "blocked"
+    assert outcome.status == "blocked"
+    assert outcome.exit_code == 1
+    assert heartbeats == []
+
+
+def test_run_scrape_failed_when_every_response_errors(monkeypatch):
+    metrics, heartbeats = _stub_io(monkeypatch)
+
+    class _FailingScraper:
+        def scrape(self, origin, dest, travel):
+            raise ValueError("malformed upstream response")
+
+        def close(self):
+            pass
+
+    outcome = common.run_scrape(
+        _FailingScraper(),
+        [("SEA", "JFK")],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/secret",
+        logger=logging.getLogger("t"),
+        time_budget_s=3600,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.exit_code == 1
+    assert outcome.errors == 1
+    assert metrics[0]["status"] == "failed"
+    assert heartbeats == []
+
+
+def test_run_scrape_partial_when_progress_precedes_error(monkeypatch):
+    metrics, heartbeats = _stub_io(monkeypatch)
+
+    class _PartiallyFailingScraper:
+        def scrape(self, origin, dest, travel):
+            if origin == "LAX":
+                raise ValueError("malformed upstream response")
+            return []
+
+        def close(self):
+            pass
+
+    outcome = common.run_scrape(
+        _PartiallyFailingScraper(),
+        [("SEA", "JFK"), ("LAX", "BOS")],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/secret",
+        logger=logging.getLogger("t"),
+        time_budget_s=3600,
+    )
+
+    assert outcome.status == "partial"
+    assert outcome.exit_code == 0
+    assert outcome.errors == 1
+    assert metrics[0]["status"] == "partial"
+    assert heartbeats == []
+
+
+def test_run_scrape_valid_empty_route_is_healthy_progress(monkeypatch):
+    metrics, heartbeats = _stub_io(monkeypatch)
+
+    outcome = common.run_scrape(
+        _FakeScraper(),
+        [("SEA", "JFK")],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/success",
+        logger=logging.getLogger("t"),
+        time_budget_s=3600,
+    )
+
+    assert outcome.status == "healthy"
+    assert outcome.routes_zero == 1
+    assert metrics[0]["status"] == "healthy"
+    assert heartbeats == ["https://heartbeat.invalid/success"]
+
+
+def test_run_scrape_empty_assignment_is_healthy_noop(monkeypatch):
+    metrics, heartbeats = _stub_io(monkeypatch)
+
+    outcome = common.run_scrape(
+        _FakeScraper(),
+        [],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/noop",
+        logger=logging.getLogger("t"),
+        time_budget_s=0,
+    )
+
+    assert outcome.status == "healthy"
+    assert outcome.routes_scraped == 0
+    assert outcome.records == 0
+    assert metrics[0]["status"] == "healthy"
+    assert heartbeats == ["https://heartbeat.invalid/noop"]

@@ -20,6 +20,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 # Wall-clock budget for a single cron run. The shared scrape loop stops cleanly between routes
 # once this is reached so a long shard (AS/B6) can never overrun the GitHub-Actions 60-minute job
@@ -27,6 +28,27 @@ from datetime import date, datetime, timedelta, timezone
 # in-flight routes unmarked). Routes not reached simply stay due for the next run. 45 min leaves
 # ~15 min of headroom under the 60-min workflow timeout.
 DEFAULT_CRON_TIME_BUDGET_S = 2700.0
+
+ScrapeStatus = Literal["healthy", "partial", "blocked", "failed"]
+
+
+@dataclass(frozen=True)
+class ScrapeOutcome:
+    """Structured result shared by metrics, logs, and entrypoint process exits."""
+
+    status: ScrapeStatus
+    due_routes: int
+    records: int
+    errors: int
+    routes_scraped: int
+    routes_unchanged: int
+    routes_zero: int
+    blocked: bool
+    stopped_early: bool
+
+    @property
+    def exit_code(self) -> int:
+        return 1 if self.status in {"blocked", "failed"} else 0
 
 
 def _default_time_budget_s() -> float:
@@ -201,11 +223,11 @@ def run_scrape(
     logger: logging.Logger,
     route_jobs=None,
     time_budget_s: float | None = None,
-) -> int:
+) -> ScrapeOutcome:
     """Run the scrape loop (every route × date), upsert valid+stamped rows, then ship the
     ``scrape_run`` metric + heartbeat. Aborts the run after the scraper raises ScraperBlockedError
     (rows already upserted persist). Always tears the scraper + DB connection down. Returns the
-    total rows upserted.
+    structured outcome used by entrypoints to choose their final process exit code.
 
     ``time_budget_s`` (default ``CRON_TIME_BUDGET_S`` env / 45 min) bounds wall-clock: the loop
     checks it *between* routes (never mid-route) and stops cleanly once reached, so a long shard
@@ -260,6 +282,7 @@ def run_scrape(
     budget_s = _default_time_budget_s() if time_budget_s is None else time_budget_s
     started = time.monotonic()
     total = error_count = routes_scraped = routes_unchanged = routes_zero = 0
+    routes_with_progress = 0
     blocked = stopped_early = False
     try:
         for job in iterable:
@@ -279,17 +302,26 @@ def run_scrape(
                 break
             origin, dest = job.origin, job.dest
             route_recs: list = []
+            route_made_progress = False
             for travel in dates:
                 try:
                     recs = scraper.scrape(origin, dest, travel)
                 except ScraperBlockedError as exc:
                     logger.warning("blocked (%s) — aborting run (rows so far persist)", exc)
+                    blocked = True
                     if queue_mode:
-                        qm.mark_blocked(job, datetime.now(timezone.utc), SCRAPER_BLOCK_COOLDOWN_MIN)
                         blocked_route = f"{origin}-{dest}"
                         blocked_airline = job.airline
                         blocked_backoff_min = SCRAPER_BLOCK_COOLDOWN_MIN
-                    blocked = True
+                        try:
+                            qm.mark_blocked(
+                                job, datetime.now(timezone.utc), SCRAPER_BLOCK_COOLDOWN_MIN
+                            )
+                        except Exception as mark_exc:  # noqa: BLE001
+                            logger.error(
+                                "Error recording block for %s→%s: %s", origin, dest, mark_exc
+                            )
+                            error_count += 1
                     break
                 except Exception as exc:  # noqa: BLE001 — one route/date must not sink the run
                     logger.error("Error scraping %s→%s %s: %s", origin, dest, travel, exc)
@@ -300,20 +332,64 @@ def run_scrape(
                     upsert_flights(stamped)
                     route_recs.extend(stamped)
                     total += len(stamped)
+                # A parsed valid-empty response is still meaningful progress. Set this only after
+                # normalization/upsert succeeds so transport, parser, and DB failures cannot turn
+                # an all-error route into a false success.
+                route_made_progress = True
             if blocked:
                 break  # do NOT mark — the blocked route stays due
             routes_scraped += 1
+            if route_made_progress:
+                routes_with_progress += 1
             if not route_recs:
                 routes_zero += 1
-            if queue_mode:
-                now = datetime.now(timezone.utc)
-                changed = qm.mark_scraped(job, cheapest_by_cabin(route_recs), now)
-                if not changed:
-                    routes_unchanged += 1
+            if queue_mode and route_made_progress:
+                try:
+                    now = datetime.now(timezone.utc)
+                    changed = qm.mark_scraped(job, cheapest_by_cabin(route_recs), now)
+                    if not changed:
+                        routes_unchanged += 1
+                except Exception as exc:  # noqa: BLE001 — report queue/DB failures honestly
+                    logger.error("Error marking %s→%s scraped: %s", origin, dest, exc)
+                    error_count += 1
             logger.info("%s→%s: %d records", origin, dest, len(route_recs))
+    except Exception as exc:  # noqa: BLE001 — still emit the failed run metric
+        logger.exception("Unexpected scrape-run failure: %s", exc)
+        error_count += 1
     finally:
-        scraper.close()
-        close_connection()
+        try:
+            scraper.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Scraper cleanup failed: %s", exc)
+            error_count += 1
+        try:
+            close_connection()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Database cleanup failed: %s", exc)
+            error_count += 1
+
+    if blocked:
+        status: ScrapeStatus = "blocked"
+    elif error_count and routes_with_progress == 0:
+        status = "failed"
+    elif error_count or stopped_early:
+        status = "partial"
+    else:
+        # Includes an empty shard assignment: matrix shards with no selected work are healthy
+        # no-ops, not failed scrapes.
+        status = "healthy"
+
+    outcome = ScrapeOutcome(
+        status=status,
+        due_routes=due_count,
+        records=total,
+        errors=error_count,
+        routes_scraped=routes_scraped,
+        routes_unchanged=routes_unchanged,
+        routes_zero=routes_zero,
+        blocked=blocked,
+        stopped_early=stopped_early,
+    )
 
     duration_s = round(time.monotonic() - started, 1)
     ship_metric(
@@ -333,15 +409,18 @@ def run_scrape(
             "blocked_route": blocked_route,
             "blocked_airline": blocked_airline,
             "blocked_backoff_min": blocked_backoff_min,
+            "status": status,
             "queue_selected_routes": queue_selected_routes,
             "queue_left_due_estimate": queue_left_due_estimate,
             "queue_fill_ratio": queue_fill_ratio,
             **freshness(source, logger),
         }
     )
-    ping_heartbeat(heartbeat_url, logger)
+    if status == "healthy":
+        ping_heartbeat(heartbeat_url, logger)
     logger.info(
-        "=== done — %d %s records (routes=%d unchanged=%d errors=%d blocked=%s) in %ss ===",
-        total, source, routes_scraped, routes_unchanged, error_count, blocked, duration_s,
+        "=== done — status=%s %d %s records "
+        "(routes=%d unchanged=%d errors=%d blocked=%s) in %ss ===",
+        status, total, source, routes_scraped, routes_unchanged, error_count, blocked, duration_s,
     )
-    return total
+    return outcome

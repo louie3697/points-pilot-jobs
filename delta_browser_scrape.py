@@ -32,7 +32,9 @@ logger = logging.getLogger("delta_browser_scrape")
 
 # Cron routes now live in config/routes.py (seeded into the scored queue via seed_from_config);
 # the daily cron drains the scored due-batch instead of a static list.
-MAX_LEGS_PER_SHARD = CRON_MAX_LEGS_PER_SHARD["delta"]
+MAX_LEGS_PER_SHARD = int(
+    os.getenv("DELTA_MAX_ROUTES_PER_SHARD", str(CRON_MAX_LEGS_PER_SHARD["delta"]))
+)
 SCRAPE_DAYS = int(os.getenv("DELTA_SCRAPE_DAYS", "5"))  # near-term window, scraped every day
 
 # On-demand single-route mode (set by the workflow_dispatch inputs). Empty in the daily cron.
@@ -40,8 +42,8 @@ ROUTE_ORIGIN = os.getenv("DELTA_ROUTE_ORIGIN", "").strip()
 ROUTE_DEST = os.getenv("DELTA_ROUTE_DEST", "").strip()
 ROUTE_DATES = os.getenv("DELTA_ROUTE_DATES", "").strip()
 
-# Cron sharding: split the scored due-batch across N parallel runs on separate runner IPs (the GH
-# Actions matrix sets these) so the per-run leg count stays under Delta's Akamai ceiling.
+# Cron sharding remains configurable, but the scheduled workflow currently runs one one-route
+# recovery probe while Delta returns HTTP 444. Manual single-route dispatch remains available.
 SHARDS = max(1, int(os.getenv("DELTA_SHARDS", "1")))
 SHARD_INDEX = int(os.getenv("DELTA_SHARD_INDEX", "0"))
 
@@ -60,7 +62,7 @@ def _build_plan(route_origin, route_dest, route_dates_csv, scrape_days, today,
     )
 
 
-def _run_cron(shard_index: int, shards: int) -> None:
+def _run_cron(shard_index: int, shards: int) -> common.ScrapeOutcome:
     """Drain this shard's slice of the scored queue (seed → due-batch → stride → cap)."""
     from scrapers.delta import DeltaScraper
 
@@ -81,14 +83,14 @@ def _run_cron(shard_index: int, shards: int) -> None:
         shard_index, shards, len(route_jobs), len(dates),
         (max(dates) - date.today()).days if dates else 0,
     )
-    common.run_scrape(
+    return common.run_scrape(
         scraper, [], dates,
         source="delta", service="point-pilot-delta", airline="DL",
         heartbeat_url=DELTA_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )
 
 
-def main() -> None:
+def main() -> common.ScrapeOutcome:
     try:
         from config.settings import PriorityTier  # noqa: F401 — also triggers env validation
     except RuntimeError as exc:
@@ -112,19 +114,19 @@ def main() -> None:
         logger.info(
             "On-demand single-route mode: %s→%s × %d dates", ROUTE_ORIGIN, ROUTE_DEST, len(dates)
         )
-        common.run_scrape(
+        return common.run_scrape(
             DeltaScraper(), pairs, dates,
             source="delta", service="point-pilot-delta", airline="DL",
             heartbeat_url=DELTA_HEARTBEAT_URL, logger=logger,
         )
     else:
-        _run_cron(SHARD_INDEX, SHARDS)
+        return _run_cron(SHARD_INDEX, SHARDS)
 
 
 if __name__ == "__main__":
-    main()
+    outcome = main()
     # nodriver leaves a pending asyncio task (Connection.aclose) after browser teardown that keeps
     # the interpreter alive, so the process never exits on its own and the GitHub Actions step hangs
     # until its timeout. main() has already scraped, upserted, shipped its metric, and pinged the
     # heartbeat by this point, so flush briefly then hard-exit.
-    flush_then_hard_exit(delay_s=3.0)
+    flush_then_hard_exit(outcome.exit_code, delay_s=3.0)
