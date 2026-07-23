@@ -197,9 +197,36 @@ class BrowserScraper(BaseScraper):
 
     def close(self) -> None:
         """Tear down browser + Chrome process + temp profile + loop. Best-effort; never raises."""
-        if self._browser is not None and self._loop is not None and not self._loop.is_closed():
+        loop = self._loop
+        browser = self._browser
+        tab = self._tab
+        if browser is not None and loop is not None and not loop.is_closed():
+
+            async def _close_connections() -> None:
+                # nodriver's synchronous Browser.stop() only *schedules* aclose(). Closing our
+                # owned loop immediately afterward destroyed that pending coroutine in production.
+                # Await each CDP connection directly before terminating Chrome or the loop.
+                connections = [tab]
+                try:
+                    connections.extend(browser.tabs)
+                except Exception:  # noqa: BLE001 — teardown remains best-effort
+                    pass
+                connections.append(browser)
+                seen: set[int] = set()
+                for connection in connections:
+                    if connection is None or id(connection) in seen:
+                        continue
+                    seen.add(id(connection))
+                    aclose = getattr(connection, "aclose", None)
+                    if aclose is None:
+                        continue
+                    try:
+                        await aclose()
+                    except Exception:  # noqa: BLE001 — continue closing remaining connections
+                        pass
+
             try:
-                self._browser.stop()
+                loop.run_until_complete(_close_connections())
             except Exception:  # noqa: BLE001
                 pass
         self._browser = None
@@ -217,6 +244,21 @@ class BrowserScraper(BaseScraper):
         if self._profile_dir:
             shutil.rmtree(self._profile_dir, ignore_errors=True)
             self._profile_dir = None
-        if self._loop is not None and not self._loop.is_closed():
-            self._loop.close()
+        if loop is not None and not loop.is_closed():
+            # The loop belongs exclusively to this scraper. Cancel and await any residual
+            # nodriver/websocket tasks so loop.close() cannot destroy pending tasks or leak an
+            # un-awaited Connection.aclose coroutine.
+            try:
+                pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:  # noqa: BLE001 — teardown remains best-effort
+                pass
+            try:
+                loop.close()
+            except Exception:  # noqa: BLE001 — close() must never mask the scrape outcome
+                pass
         self._loop = None
