@@ -109,7 +109,10 @@ Turkish and Etihad were added this way. Mirror `scrapers/etihad.py` + `etihad_br
 
 ## Conventions
 
-- `gh` is authed as `Louie2074`; this repo is **public** (unlimited Actions minutes). Workflows must
-  be on the default branch before `workflow_dispatch` sees them.
+- Use the `louie3697` GitHub account for commits, pushes, PRs, merges, and workflow operations.
+  Push through the `github-business` SSH alias and unset `GH_TOKEN`/`GITHUB_TOKEN` for `gh`
+  commands so an environment token cannot override the account. This repo is **public**
+  (unlimited Actions minutes). Workflows must be on the default branch before
+  `workflow_dispatch` sees them.
 - Commit per-repo with explicit `git add`. End commit messages with the project's `Co-Authored-By`
   trailer. Don't push to `main` unprompted beyond the scope you were asked to do.
