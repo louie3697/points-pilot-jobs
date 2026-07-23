@@ -268,7 +268,7 @@ def test_run_scrape_valid_empty_route_is_healthy_progress(monkeypatch):
     assert heartbeats == ["https://heartbeat.invalid/success"]
 
 
-def test_run_scrape_empty_assignment_is_healthy_noop(monkeypatch):
+def test_run_scrape_empty_on_demand_assignment_is_healthy_noop_without_heartbeat(monkeypatch):
     metrics, heartbeats = _stub_io(monkeypatch)
 
     outcome = common.run_scrape(
@@ -287,4 +287,34 @@ def test_run_scrape_empty_assignment_is_healthy_noop(monkeypatch):
     assert outcome.routes_scraped == 0
     assert outcome.records == 0
     assert metrics[0]["status"] == "healthy"
-    assert heartbeats == ["https://heartbeat.invalid/noop"]
+    assert heartbeats == []
+
+
+def test_run_scrape_empty_cron_queue_is_healthy_and_pings_heartbeat(monkeypatch):
+    import pipeline.queue_manager as queue_manager
+
+    metrics, heartbeats = _stub_io(monkeypatch)
+
+    class _FakeQM:
+        def __init__(self, scraper=None):
+            pass
+
+    monkeypatch.setattr(queue_manager, "QueueManager", _FakeQM)
+
+    outcome = common.run_scrape(
+        _FakeScraper(),
+        [],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/cron-noop",
+        logger=logging.getLogger("t"),
+        route_jobs=[],
+        time_budget_s=0,
+    )
+
+    assert outcome.status == "healthy"
+    assert outcome.due_routes == 0
+    assert metrics[0]["status"] == "healthy"
+    assert heartbeats == ["https://heartbeat.invalid/cron-noop"]

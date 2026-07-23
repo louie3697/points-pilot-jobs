@@ -51,7 +51,8 @@ Each entrypoint is a **thin config** — its route list, `<AIRLINE>_*` env vars,
 two httpx scrapers reuse it too). The shared module owns the run plan (scored-queue cron drain /
 single-route on-demand / sharding), the scrape loop, the `scrape_run` Better Stack metric, the
 freshness snapshot, and status-aware heartbeat ping, so all six behave identically. Every run emits
-`healthy`, `partial`, `blocked`, or `failed`; only `healthy` pings its success heartbeat.
+`healthy`, `partial`, `blocked`, or `failed`. A heartbeat requires healthy cron execution or
+completed on-demand work; idle on-demand matrix shards never signal success.
 
 Each entrypoint accepts on-demand `workflow_dispatch` inputs (`origin`, `destination`, `dates`) for
 a single-route run, and `<AIRLINE>_SCRAPE_DAYS` / `<AIRLINE>_SHARDS` env tuning. **Sharding** (a

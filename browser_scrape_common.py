@@ -416,7 +416,9 @@ def run_scrape(
             **freshness(source, logger),
         }
     )
-    if status == "healthy":
+    # Idle on-demand matrix shards are healthy exit-0 no-ops, but cannot prove the requested
+    # scrape succeeded. Cron queue mode may ping with no due work to prove its scheduler ran.
+    if status == "healthy" and (queue_mode or routes_with_progress > 0):
         ping_heartbeat(heartbeat_url, logger)
     logger.info(
         "=== done — status=%s %d %s records "
