@@ -59,7 +59,7 @@ def _build_plan(route_origin, route_dest, route_dates_csv, scrape_days, today,
     )
 
 
-def _run_cron(shard_index: int, shards: int) -> None:
+def _run_cron(shard_index: int, shards: int) -> common.ScrapeOutcome:
     """Drain this shard's slice of the scored queue (seed → due-batch → stride → cap)."""
     from scrapers.southwest import SouthwestScraper
 
@@ -80,14 +80,14 @@ def _run_cron(shard_index: int, shards: int) -> None:
         shard_index, shards, len(route_jobs), len(dates),
         (max(dates) - date.today()).days if dates else 0,
     )
-    common.run_scrape(
+    return common.run_scrape(
         scraper, [], dates,
         source="southwest", service="point-pilot-southwest", airline="WN",
         heartbeat_url=SOUTHWEST_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )
 
 
-def main() -> None:
+def main() -> common.ScrapeOutcome:
     try:
         from config.settings import PriorityTier  # noqa: F401 — also triggers env validation
     except RuntimeError as exc:
@@ -111,18 +111,18 @@ def main() -> None:
         logger.info(
             "On-demand single-route mode: %s→%s × %d dates", ROUTE_ORIGIN, ROUTE_DEST, len(dates)
         )
-        common.run_scrape(
+        return common.run_scrape(
             SouthwestScraper(), pairs, dates,
             source="southwest", service="point-pilot-southwest", airline="WN",
             heartbeat_url=SOUTHWEST_HEARTBEAT_URL, logger=logger,
         )
     else:
-        _run_cron(SHARD_INDEX, SHARDS)
+        return _run_cron(SHARD_INDEX, SHARDS)
 
 
 if __name__ == "__main__":
-    main()
+    outcome = main()
     # nodriver leaves keepalive/aclose tasks on its loop that keep the interpreter alive, so the
     # process never exits and the GH Actions step hangs until timeout. main() has already
     # scraped/upserted/shipped its metric, so flush briefly then hard-exit.
-    flush_then_hard_exit(delay_s=3.0)
+    flush_then_hard_exit(outcome.exit_code, delay_s=3.0)

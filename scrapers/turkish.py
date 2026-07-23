@@ -50,6 +50,31 @@ _CABIN_MAP: dict[str, str] = {
 }
 
 
+def _bounded_shape(value: object) -> str:
+    """Non-secret response shape metadata suitable for logs and metrics."""
+    if isinstance(value, dict):
+        return f"dict(len={min(len(value), 999)})"
+    if isinstance(value, list):
+        return f"list(len={min(len(value), 999)})"
+    if isinstance(value, str):
+        return f"str(len={min(len(value), 99999)})"
+    return type(value).__name__
+
+
+class TurkishResponseError(RuntimeError):
+    """Typed, bounded Turkish response failure with no raw response or request data."""
+
+    def __init__(self, category: str, *, status: object = None, shape: str = "") -> None:
+        self.category = category
+        safe_status = status if isinstance(status, int) else None
+        parts = [f"category={category}"]
+        if safe_status is not None:
+            parts.append(f"status={safe_status}")
+        if shape:
+            parts.append(f"shape={shape[:80]}")
+        super().__init__(f"Turkish response failure ({', '.join(parts)})"[:200])
+
+
 def _parse_tk_dt(s: object, iata: str) -> datetime | None:
     """Parse Turkish's "DD-MM-YYYY HH:MM" local airport time as a tz-aware datetime at `iata`.
 
@@ -140,8 +165,9 @@ class TurkishScraper(BrowserScraper):
     def _build_js(self, origin: str, dest: str, travel_date: date) -> str:
         """One self-contained in-page async script: a single AWARD availability fetch (the
         response carries every cabin's price in fareCategory), retrying PerimeterX 428 challenges.
-        Returns the raw response text (JSON) or 'null'. ONE tab.evaluate per scrape — see module
-        docstring on the nodriver concurrent-recv constraint."""
+        Returns a small transport envelope containing the response status + raw response text, or
+        a body-free failure category. ONE tab.evaluate per scrape — see the module docstring on
+        the nodriver concurrent-recv constraint."""
         date_str = travel_date.strftime("%d-%m-%Y")
         return (
             "(async () => {"
@@ -160,55 +186,112 @@ class TurkishScraper(BrowserScraper):
             "     departureDate:DT}],savedDate:new Date().toISOString()};"
             "   for(let i=0;i<=RETRIES;i++){let r,t;"
             "     try{r=await fetch(URL,{method:'POST',headers:hdrs(),body:JSON.stringify(body),"
-            "       credentials:'include'});t=await r.text();}catch(e){return 'null';}"
-            "     if(r.status===428||t.indexOf('sec-cp-challenge')>=0){await sleep(WAIT);continue;}"
-            "     return t;}"
-            "   return 'null';"
+            "       credentials:'include'});t=await r.text();}catch(e){"
+            "       return JSON.stringify({kind:'transport'});}"
+            "     if(r.status===428||t.indexOf('sec-cp-challenge')>=0){"
+            "       if(i<RETRIES){await sleep(WAIT);continue;}"
+            "       return JSON.stringify({kind:'challenge',status:r.status});}"
+            "     return JSON.stringify({kind:'response',status:r.status,text:t});}"
+            "   return JSON.stringify({kind:'challenge'});"
             "})()"
         )
 
     async def fetch_raw(self, origin: str, dest: str, travel_date: date) -> dict:
-        """Run the availability fetch as ONE in-page evaluate in the warmed session. Returns the
-        parsed response dict ({} on transport failure / PX block / non-JSON)."""
+        """Run one in-page availability fetch and return a parsed API response.
+
+        Transport, exhausted challenge, and JSON failures raise a bounded typed diagnostic. Raw
+        bodies, headers, cookies, and generated request identifiers are never copied into it.
+        """
         tab = await self._ensure_browser()
         await asyncio.sleep(random.uniform(self.min_delay_s, self.min_delay_s * 2))  # pacing
         out = await tab.evaluate(self._build_js(origin, dest, travel_date), await_promise=True)
         if not isinstance(out, str):
-            logger.warning("[TK] in-page evaluate returned non-str (JS error?): %r", out)
-            return {}
+            raise TurkishResponseError("transport", shape=_bounded_shape(out))
         try:
-            data = json.loads(out)
+            wire = json.loads(out)
         except (ValueError, TypeError):
-            return {}
-        return data if isinstance(data, dict) else {}
+            raise TurkishResponseError("non_json", shape=_bounded_shape(out)) from None
+        if not isinstance(wire, dict):
+            raise TurkishResponseError("non_json", shape=_bounded_shape(wire))
+
+        kind = wire.get("kind")
+        status = wire.get("status")
+        if kind == "challenge":
+            raise TurkishResponseError("challenge", status=status, shape=_bounded_shape(wire))
+        if kind == "transport":
+            raise TurkishResponseError("transport", shape=_bounded_shape(wire))
+        if kind != "response":
+            raise TurkishResponseError("transport", status=status, shape=_bounded_shape(wire))
+
+        response_text = wire.get("text")
+        if not isinstance(response_text, str):
+            raise TurkishResponseError(
+                "non_json", status=status, shape=_bounded_shape(response_text)
+            )
+        try:
+            data = json.loads(response_text)
+        except (ValueError, TypeError):
+            raise TurkishResponseError(
+                "non_json", status=status, shape=_bounded_shape(response_text)
+            ) from None
+        if not isinstance(data, dict):
+            raise TurkishResponseError(
+                "missing_envelope", status=status, shape=_bounded_shape(data)
+            )
+        return data
 
     def normalize(
         self, raw: dict, origin: str, dest: str, travel_date: date
     ) -> list[FlightRecord]:
         """Map the availability response → FlightRecords: one per (itinerary × priced cabin)."""
         if not isinstance(raw, dict):
-            return []
+            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(raw))
+        if raw.get("success") is False:
+            raise TurkishResponseError("unsuccessful", shape=_bounded_shape(raw))
         data = raw.get("data")
         if not isinstance(data, dict):
-            return []  # success:false / empty / PX-challenge
-        od_list = data.get("originDestinationInformationList") or []
-        if not od_list or not isinstance(od_list[0], dict):
-            return []
+            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(data))
+        od_list = data.get("originDestinationInformationList")
+        if not isinstance(od_list, list) or not od_list or not isinstance(od_list[0], dict):
+            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(od_list))
+        options = od_list[0].get("originDestinationOptionList")
+        if not isinstance(options, list):
+            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(options))
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(hours=TTL_HOURS[PriorityTier.MED])
         seen: dict[tuple[str, str], FlightRecord] = {}  # (flight_no, cabin) — dedup brand dups
 
-        for opt in od_list[0].get("originDestinationOptionList") or []:
+        for index, opt in enumerate(options):
             if not isinstance(opt, dict):
-                continue
+                raise TurkishResponseError(
+                    "malformed_options", shape=f"option[{index}]={_bounded_shape(opt)}"
+                )
+            segments = opt.get("segmentList")
+            fares = opt.get("fareCategory")
+            malformed_segments = (
+                not isinstance(segments, list)
+                or not segments
+                or any(not isinstance(segment, dict) for segment in segments)
+            )
+            malformed_fares = not isinstance(fares, dict) or not fares
+            if malformed_segments or malformed_fares:
+                raise TurkishResponseError(
+                    "malformed_options",
+                    shape=(
+                        f"option[{index}](segments={_bounded_shape(segments)},"
+                        f"fares={_bounded_shape(fares)})"
+                    ),
+                )
             try:
                 for rec in self._records_for_option(
                     opt, origin, dest, travel_date, now, expires_at
                 ):
                     seen.setdefault((rec.raw_flight_number, rec.cabin_class), rec)
-            except Exception as exc:  # noqa: BLE001 — one bad option must not sink the run
-                logger.warning("[TK] error on option: %s", exc, exc_info=True)
+            except Exception:  # noqa: BLE001 — convert parser drift to a body-free diagnostic
+                raise TurkishResponseError(
+                    "malformed_options", shape=f"option[{index}]=dict(len={len(opt)})"
+                ) from None
         return list(seen.values())
 
     def _records_for_option(

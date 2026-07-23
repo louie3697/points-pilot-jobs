@@ -32,7 +32,7 @@ SHARDS = max(1, int(os.getenv("JETBLUE_SHARDS", "1")))
 SHARD_INDEX = int(os.getenv("JETBLUE_SHARD_INDEX", "0"))
 
 
-def _run_cron(shard_index: int, shards: int) -> None:
+def _run_cron(shard_index: int, shards: int) -> common.ScrapeOutcome:
     from scrapers.jetblue import JetBlueScraper
 
     scraper = JetBlueScraper()
@@ -47,14 +47,14 @@ def _run_cron(shard_index: int, shards: int) -> None:
         "Cron queue mode (shard %d/%d): %d due routes × %d dates",
         shard_index, shards, len(route_jobs), len(dates),
     )
-    common.run_scrape(
+    return common.run_scrape(
         scraper, [], dates,
         source="jetblue", service="point-pilot-jetblue", airline="B6",
         heartbeat_url=JETBLUE_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
     )
 
 
-def main() -> None:
+def main() -> common.ScrapeOutcome:
     try:
         from config.settings import PriorityTier  # noqa: F401 — triggers env validation
     except RuntimeError as exc:
@@ -67,9 +67,9 @@ def main() -> None:
     install_log_shipping("point-pilot-jetblue")
     migrate()
     logger.info("Schema ready")
-    _run_cron(SHARD_INDEX, SHARDS)
+    return _run_cron(SHARD_INDEX, SHARDS)
 
 
 if __name__ == "__main__":
-    main()
-    flush_then_hard_exit()
+    outcome = main()
+    flush_then_hard_exit(outcome.exit_code)

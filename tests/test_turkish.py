@@ -1,6 +1,11 @@
+import asyncio
+import json
 from datetime import date
 
+import pytest
+
 from scrapers.turkish import (
+    TurkishResponseError,
     TurkishScraper,
     _cabin_miles,
     _flight_number,
@@ -111,11 +116,83 @@ def test_normalize_skips_cash_and_unmapped_cabins():
     assert TurkishScraper().normalize(_resp([_opt(fares=fares)]), "JFK", "IST", TRAVEL) == []
 
 
-def test_normalize_handles_challenge_and_empty():
-    sc = TurkishScraper()
-    assert sc.normalize({"sec-cp-challenge": "true"}, "JFK", "IST", TRAVEL) == []
-    assert sc.normalize({"data": None, "success": False}, "JFK", "IST", TRAVEL) == []
-    assert sc.normalize({}, "JFK", "IST", TRAVEL) == []
+def test_normalize_accepts_valid_empty_options():
+    assert TurkishScraper().normalize(_resp([]), "JFK", "IST", TRAVEL) == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "category"),
+    [
+        ({"success": False, "data": None, "message": "secret-body"}, "unsuccessful"),
+        ({"success": True, "data": {}}, "missing_envelope"),
+        ({"success": True}, "missing_envelope"),
+        ({}, "missing_envelope"),
+        (_resp([{"segmentList": "not-a-list", "fareCategory": {}}]), "malformed_options"),
+        (_resp([{"segmentList": [_seg()], "fareCategory": "not-a-map"}]), "malformed_options"),
+    ],
+)
+def test_normalize_classifies_unsuccessful_envelope_and_option_failures(raw, category):
+    with pytest.raises(TurkishResponseError) as exc:
+        TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
+
+    assert exc.value.category == category
+    diagnostic = str(exc.value)
+    assert len(diagnostic) <= 200
+    assert "secret-body" not in diagnostic
+    assert "not-a-list" not in diagnostic
+    assert "not-a-map" not in diagnostic
+
+
+class _EvaluateTab:
+    def __init__(self, value):
+        self.value = value
+
+    async def evaluate(self, *_args, **_kwargs):
+        return self.value
+
+
+def _fetch_result(monkeypatch, evaluated):
+    scraper = TurkishScraper()
+
+    async def fake_ensure_browser():
+        return _EvaluateTab(evaluated)
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scraper, "_ensure_browser", fake_ensure_browser)
+    monkeypatch.setattr("scrapers.turkish.asyncio.sleep", no_sleep)
+    return asyncio.run(scraper.fetch_raw("JFK", "IST", TRAVEL))
+
+
+def test_fetch_raw_returns_populated_response(monkeypatch):
+    response = _resp([_opt()])
+    wire = json.dumps({"kind": "response", "status": 200, "text": json.dumps(response)})
+
+    assert _fetch_result(monkeypatch, wire) == response
+
+
+@pytest.mark.parametrize(
+    ("evaluated", "category"),
+    [
+        (None, "transport"),
+        ("<html>cookie=super-secret</html>", "non_json"),
+        (json.dumps({"kind": "challenge", "status": 428}), "challenge"),
+        (json.dumps({"kind": "transport"}), "transport"),
+    ],
+)
+def test_fetch_raw_classifies_transport_non_json_and_exhausted_challenge(
+    monkeypatch, evaluated, category
+):
+    with pytest.raises(TurkishResponseError) as exc:
+        _fetch_result(monkeypatch, evaluated)
+
+    assert exc.value.category == category
+    diagnostic = str(exc.value)
+    assert len(diagnostic) <= 200
+    assert "super-secret" not in diagnostic
+    assert "cookie" not in diagnostic.lower()
+    assert "header" not in diagnostic.lower()
 
 
 # ---------------------------------------------------------------- request builder
