@@ -1,4 +1,11 @@
+import logging
+from datetime import date
+
+import httpx
+import pytest
 import yaml
+
+import browser_scrape_common as common
 
 _WF = ".github/workflows/jetblue-scrape.yml"
 
@@ -9,6 +16,41 @@ def test_jetblue_scrape_imports_and_configures():
     assert jetblue_scrape.MAX_LEGS_PER_SHARD == 36
     from scrapers.jetblue import JetBlueScraper
     assert JetBlueScraper.airline_code == "B6"
+
+
+@pytest.mark.parametrize("status_code", [403, 406])
+def test_jetblue_canary_reports_first_waf_response_as_blocked(monkeypatch, status_code):
+    """The one-request weekly canary must not need a multi-request block streak."""
+    from scrapers.jetblue import JetBlueScraper
+
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *args, **kwargs: {})
+    monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
+
+    scraper = JetBlueScraper()
+    response = httpx.Response(
+        status_code,
+        request=httpx.Request("POST", "https://www.jetblue.com/api/search"),
+    )
+    monkeypatch.setattr(scraper._client, "request", lambda *args, **kwargs: response)
+    monkeypatch.setattr(scraper, "_cooldown", lambda: None)
+
+    outcome = common.run_scrape(
+        scraper,
+        [("JFK", "LAX")],
+        [date(2026, 7, 26)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="",
+        logger=logging.getLogger("test-jetblue"),
+    )
+
+    assert outcome.status == "blocked"
+    assert outcome.exit_code == 1
+    assert metrics[0]["status"] == "blocked"
+    assert metrics[0]["blocked"] is True
 
 
 def test_jetblue_workflow_runs_weekly_probe_while_blocked():
