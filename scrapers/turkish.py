@@ -26,13 +26,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import random
+import re
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from config.airport_tz import AIRPORT_TZ
 from config.settings import TTL_HOURS, PriorityTier
-from scrapers.base import FlightRecord
+from scrapers.base import FlightRecord, ScraperBlockedError
 from scrapers.browser import BrowserScraper
 
 logger = logging.getLogger(__name__)
@@ -50,29 +52,92 @@ _CABIN_MAP: dict[str, str] = {
 }
 
 
-def _bounded_shape(value: object) -> str:
-    """Non-secret response shape metadata suitable for logs and metrics."""
-    if isinstance(value, dict):
-        return f"dict(len={min(len(value), 999)})"
-    if isinstance(value, list):
-        return f"list(len={min(len(value), 999)})"
+_SAFE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
+_SAFE_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
+_UUID = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+    r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
+)
+_PROVIDER_FIELDS = ("code", "errorCode", "errorStatus", "status", "statusCode")
+_SECRET_HINTS = ("secret", "token", "bearer", "cookie", "authorization", "password")
+_PERIMETERX_BLOCK_KEYS = frozenset(
+    {
+        "altBlockScript",
+        "appId",
+        "blockScript",
+        "customLogo",
+        "firstPartyEnabled",
+        "hostUrl",
+        "jsClientSrc",
+        "uuid",
+        "vid",
+    }
+)
+
+
+def _safe_primitive(value: object) -> str | None:
+    """Render only code-like primitive values; reject UUIDs and secret-shaped strings."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return str(value)
     if isinstance(value, str):
-        return f"str(len={min(len(value), 99999)})"
-    return type(value).__name__
+        lowered = value.lower()
+        if (
+            _SAFE_CODE.fullmatch(value)
+            and not _UUID.fullmatch(value)
+            and not any(hint in lowered for hint in _SECRET_HINTS)
+        ):
+            return value
+    return None
+
+
+class _ResponsePayload(dict):
+    """Parsed provider JSON carrying body-free HTTP metadata into ``normalize``."""
+
+    def __init__(self, payload: dict, http_status: object) -> None:
+        super().__init__(payload)
+        self.http_status = (
+            http_status if isinstance(http_status, int) and not isinstance(http_status, bool)
+            else None
+        )
 
 
 class TurkishResponseError(RuntimeError):
     """Typed, bounded Turkish response failure with no raw response or request data."""
 
-    def __init__(self, category: str, *, status: object = None, shape: str = "") -> None:
+    def __init__(
+        self, category: str, *, status: object = None, payload: object = None
+    ) -> None:
         self.category = category
-        safe_status = status if isinstance(status, int) else None
+        safe_status = status if isinstance(status, int) and not isinstance(status, bool) else None
         parts = [f"category={category}"]
         if safe_status is not None:
-            parts.append(f"status={safe_status}")
-        if shape:
-            parts.append(f"shape={shape[:80]}")
-        super().__init__(f"Turkish response failure ({', '.join(parts)})"[:200])
+            parts.append(f"http_status={safe_status}")
+        if isinstance(payload, dict):
+            keys = sorted(
+                key for key in payload if isinstance(key, str) and _SAFE_KEY.fullmatch(key)
+            )[:20]
+            parts.append(f"keys=[{','.join(keys)}]")
+            data_type = type(payload["data"]).__name__ if "data" in payload else "missing"
+            parts.append(f"data_type={data_type}")
+            provider = []
+            for field in _PROVIDER_FIELDS:
+                if field not in payload:
+                    continue
+                rendered = _safe_primitive(payload[field])
+                if rendered is not None:
+                    provider.append(f"{field}={rendered}")
+            if provider:
+                parts.append(f"provider=[{','.join(provider)}]")
+        super().__init__(f"Turkish response failure ({', '.join(parts)})"[:320])
+
+
+def _is_perimeterx_block_envelope(payload: dict, status: object) -> bool:
+    """Match only the controlled 403 envelope observed from Turkish's PerimeterX edge."""
+    return status == 403 and frozenset(payload) == _PERIMETERX_BLOCK_KEYS
 
 
 def _parse_tk_dt(s: object, iata: str) -> datetime | None:
@@ -206,67 +271,65 @@ class TurkishScraper(BrowserScraper):
         await asyncio.sleep(random.uniform(self.min_delay_s, self.min_delay_s * 2))  # pacing
         out = await tab.evaluate(self._build_js(origin, dest, travel_date), await_promise=True)
         if not isinstance(out, str):
-            raise TurkishResponseError("transport", shape=_bounded_shape(out))
+            raise TurkishResponseError("transport")
         try:
             wire = json.loads(out)
         except (ValueError, TypeError):
-            raise TurkishResponseError("non_json", shape=_bounded_shape(out)) from None
+            raise TurkishResponseError("non_json") from None
         if not isinstance(wire, dict):
-            raise TurkishResponseError("non_json", shape=_bounded_shape(wire))
+            raise TurkishResponseError("non_json")
 
         kind = wire.get("kind")
         status = wire.get("status")
         if kind == "challenge":
-            raise TurkishResponseError("challenge", status=status, shape=_bounded_shape(wire))
+            raise TurkishResponseError("challenge", status=status)
         if kind == "transport":
-            raise TurkishResponseError("transport", shape=_bounded_shape(wire))
+            raise TurkishResponseError("transport")
         if kind != "response":
-            raise TurkishResponseError("transport", status=status, shape=_bounded_shape(wire))
+            raise TurkishResponseError("transport", status=status)
 
         response_text = wire.get("text")
         if not isinstance(response_text, str):
-            raise TurkishResponseError(
-                "non_json", status=status, shape=_bounded_shape(response_text)
-            )
+            raise TurkishResponseError("non_json", status=status)
         try:
             data = json.loads(response_text)
         except (ValueError, TypeError):
-            raise TurkishResponseError(
-                "non_json", status=status, shape=_bounded_shape(response_text)
-            ) from None
+            raise TurkishResponseError("non_json", status=status) from None
         if not isinstance(data, dict):
-            raise TurkishResponseError(
-                "missing_envelope", status=status, shape=_bounded_shape(data)
-            )
-        return data
+            raise TurkishResponseError("missing_envelope", status=status)
+        return _ResponsePayload(data, status)
 
     def normalize(
         self, raw: dict, origin: str, dest: str, travel_date: date
     ) -> list[FlightRecord]:
         """Map the availability response → FlightRecords: one per (itinerary × priced cabin)."""
+        status = getattr(raw, "http_status", None)
         if not isinstance(raw, dict):
-            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(raw))
+            raise TurkishResponseError("missing_envelope", status=status)
+        if _is_perimeterx_block_envelope(raw, status):
+            raise ScraperBlockedError("Turkish PerimeterX block envelope (status=403)")
+        if isinstance(status, int) and not 200 <= status < 300:
+            category = "unsuccessful" if raw.get("success") is False else "http_error"
+            raise TurkishResponseError(category, status=status, payload=raw)
         if raw.get("success") is False:
-            raise TurkishResponseError("unsuccessful", shape=_bounded_shape(raw))
+            raise TurkishResponseError("unsuccessful", status=status, payload=raw)
         data = raw.get("data")
         if not isinstance(data, dict):
-            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(data))
+            raise TurkishResponseError("missing_envelope", status=status, payload=raw)
         od_list = data.get("originDestinationInformationList")
         if not isinstance(od_list, list) or not od_list or not isinstance(od_list[0], dict):
-            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(od_list))
+            raise TurkishResponseError("missing_envelope", status=status, payload=raw)
         options = od_list[0].get("originDestinationOptionList")
         if not isinstance(options, list):
-            raise TurkishResponseError("missing_envelope", shape=_bounded_shape(options))
+            raise TurkishResponseError("missing_envelope", status=status, payload=raw)
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(hours=TTL_HOURS[PriorityTier.MED])
         seen: dict[tuple[str, str], FlightRecord] = {}  # (flight_no, cabin) — dedup brand dups
 
-        for index, opt in enumerate(options):
+        for opt in options:
             if not isinstance(opt, dict):
-                raise TurkishResponseError(
-                    "malformed_options", shape=f"option[{index}]={_bounded_shape(opt)}"
-                )
+                raise TurkishResponseError("malformed_options", status=status, payload=raw)
             segments = opt.get("segmentList")
             fares = opt.get("fareCategory")
             malformed_segments = (
@@ -276,13 +339,7 @@ class TurkishScraper(BrowserScraper):
             )
             malformed_fares = not isinstance(fares, dict) or not fares
             if malformed_segments or malformed_fares:
-                raise TurkishResponseError(
-                    "malformed_options",
-                    shape=(
-                        f"option[{index}](segments={_bounded_shape(segments)},"
-                        f"fares={_bounded_shape(fares)})"
-                    ),
-                )
+                raise TurkishResponseError("malformed_options", status=status, payload=raw)
             try:
                 for rec in self._records_for_option(
                     opt, origin, dest, travel_date, now, expires_at
@@ -290,7 +347,7 @@ class TurkishScraper(BrowserScraper):
                     seen.setdefault((rec.raw_flight_number, rec.cabin_class), rec)
             except Exception:  # noqa: BLE001 — convert parser drift to a body-free diagnostic
                 raise TurkishResponseError(
-                    "malformed_options", shape=f"option[{index}]=dict(len={len(opt)})"
+                    "malformed_options", status=status, payload=raw
                 ) from None
         return list(seen.values())
 

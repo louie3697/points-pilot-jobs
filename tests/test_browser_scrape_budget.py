@@ -13,7 +13,7 @@ boundaries are stubbed so the budget *logic* is what's under test.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import browser_scrape_common as common
@@ -34,12 +34,13 @@ class _FakeScraper:
         pass
 
 
-def _stub_io(monkeypatch):
+def _stub_io(monkeypatch, freshness_snapshot=None):
     """Stub the DB/obs side effects so only the budget loop logic runs. Returns the captured
     ``ship_metric`` payloads."""
     metrics: list[dict] = []
     monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
-    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+    snapshot = dict(freshness_snapshot or {})
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: dict(snapshot))
     heartbeats: list[str] = []
     monkeypatch.setattr(
         common,
@@ -268,6 +269,35 @@ def test_run_scrape_valid_empty_route_is_healthy_progress(monkeypatch):
     assert heartbeats == ["https://heartbeat.invalid/success"]
 
 
+def test_run_scrape_valid_populated_route_pings_heartbeat(monkeypatch):
+    metrics, heartbeats = _stub_io(monkeypatch)
+    monkeypatch.setattr("pipeline.normalizer.filter_valid", lambda records: records)
+    monkeypatch.setattr("pipeline.normalizer.stamp_expiry", lambda records, _tier: records)
+    monkeypatch.setattr("pp_db.autocommit.upsert_flights", lambda records: len(records))
+
+    class _PopulatedScraper(_FakeScraper):
+        def scrape(self, origin, dest, travel):
+            self.calls += 1
+            return [object()]
+
+    outcome = common.run_scrape(
+        _PopulatedScraper(),
+        [("SEA", "JFK")],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/populated",
+        logger=logging.getLogger("t"),
+        time_budget_s=3600,
+    )
+
+    assert outcome.status == "healthy"
+    assert outcome.records == 1
+    assert metrics[0]["records"] == 1
+    assert heartbeats == ["https://heartbeat.invalid/populated"]
+
+
 def test_run_scrape_empty_on_demand_assignment_is_healthy_noop_without_heartbeat(monkeypatch):
     metrics, heartbeats = _stub_io(monkeypatch)
 
@@ -290,7 +320,7 @@ def test_run_scrape_empty_on_demand_assignment_is_healthy_noop_without_heartbeat
     assert heartbeats == []
 
 
-def test_run_scrape_empty_cron_queue_is_healthy_and_pings_heartbeat(monkeypatch):
+def test_run_scrape_empty_cron_queue_with_no_source_data_does_not_ping_heartbeat(monkeypatch):
     import pipeline.queue_manager as queue_manager
 
     metrics, heartbeats = _stub_io(monkeypatch)
@@ -317,4 +347,119 @@ def test_run_scrape_empty_cron_queue_is_healthy_and_pings_heartbeat(monkeypatch)
     assert outcome.status == "healthy"
     assert outcome.due_routes == 0
     assert metrics[0]["status"] == "healthy"
-    assert heartbeats == ["https://heartbeat.invalid/cron-noop"]
+    assert heartbeats == []
+
+
+def test_run_scrape_empty_cron_queue_with_unexpired_source_data_pings_heartbeat_once(monkeypatch):
+    import pipeline.queue_manager as queue_manager
+
+    metrics, heartbeats = _stub_io(monkeypatch)
+    freshness_calls = 0
+
+    def fresh_snapshot(*_args, **_kwargs):
+        nonlocal freshness_calls
+        freshness_calls += 1
+        return {
+            "jetblue_rows": 4,
+            "jetblue_newest_age_h": 2.0,
+            "jetblue_unexpired_rows": 1,
+        }
+
+    monkeypatch.setattr(common, "freshness", fresh_snapshot)
+
+    class _FakeQM:
+        def __init__(self, scraper=None):
+            pass
+
+    monkeypatch.setattr(queue_manager, "QueueManager", _FakeQM)
+
+    outcome = common.run_scrape(
+        _FakeScraper(),
+        [],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/fresh-idle",
+        logger=logging.getLogger("t"),
+        route_jobs=[],
+        time_budget_s=0,
+    )
+
+    assert outcome.status == "healthy"
+    assert metrics[0]["jetblue_rows"] == 4
+    assert metrics[0]["jetblue_newest_age_h"] == 2.0
+    assert metrics[0]["jetblue_unexpired_rows"] == 1
+    assert freshness_calls == 1
+    assert heartbeats == ["https://heartbeat.invalid/fresh-idle"]
+
+
+def test_run_scrape_empty_cron_queue_with_recent_but_expired_data_skips_heartbeat(
+    monkeypatch,
+):
+    import pipeline.queue_manager as queue_manager
+
+    metrics, heartbeats = _stub_io(
+        monkeypatch,
+        {
+            "jetblue_rows": 4,
+            "jetblue_newest_age_h": 0.0,
+            "jetblue_unexpired_rows": 0,
+        },
+    )
+
+    class _FakeQM:
+        def __init__(self, scraper=None):
+            pass
+
+    monkeypatch.setattr(queue_manager, "QueueManager", _FakeQM)
+
+    outcome = common.run_scrape(
+        _FakeScraper(),
+        [],
+        [date(2026, 7, 1)],
+        source="jetblue",
+        service="point-pilot-jetblue",
+        airline="B6",
+        heartbeat_url="https://heartbeat.invalid/expired-idle",
+        logger=logging.getLogger("t"),
+        route_jobs=[],
+        time_budget_s=0,
+    )
+
+    assert outcome.status == "healthy"
+    assert metrics[0]["jetblue_unexpired_rows"] == 0
+    assert heartbeats == []
+
+
+def test_freshness_snapshot_counts_only_rows_expiring_after_database_now(monkeypatch):
+    executed = []
+    newest = datetime(2026, 7, 23, 12, tzinfo=timezone.utc)
+
+    class _Result:
+        def fetchone(self):
+            return 7, newest, 2
+
+    class _Connection:
+        def execute(self, statement, params):
+            executed.append((str(statement), params))
+            return _Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+    class _Engine:
+        def connect(self):
+            return _Connection()
+
+    monkeypatch.setattr("pp_db.engine.get_engine", lambda: _Engine())
+
+    snapshot = common.freshness("jetblue", logging.getLogger("t"))
+
+    assert snapshot["jetblue_rows"] == 7
+    assert snapshot["jetblue_unexpired_rows"] == 2
+    assert "expires_at_utc > now()" in " ".join(executed[0][0].split())
+    assert executed[0][1] == {"source": "jetblue"}

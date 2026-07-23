@@ -2,6 +2,7 @@ from datetime import date
 
 import yaml
 
+from browser_scrape_common import dense_sparse_dates
 from delta_browser_scrape import _build_plan, _parse_dates_csv
 
 _WF = ".github/workflows/delta-browser-scrape.yml"
@@ -29,17 +30,16 @@ def test_delta_workflow_shard_matrix_is_consistent():
     assert n == 1, "scheduled Delta is a single low-cost recovery probe"
     assert env["DELTA_SHARD_INDEX"] == "${{ matrix.shard }}"
     assert env["DELTA_MAX_LEGS_PER_SHARD"] == "1"
+    assert env["DELTA_SCRAPE_DAYS"] == "1"
     assert env["CRON_TIME_BUDGET_S"] == "7200"
 
 
-def test_delta_workflow_runs_once_daily_and_keeps_manual_dispatch():
+def test_delta_workflow_runs_once_weekly_and_keeps_manual_dispatch():
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     schedule = wf[True]["schedule"]
     crons = [s["cron"] for s in schedule]
-    assert crons == ["0 8 * * *"]
-    hours = [int(c.split()[1]) for c in crons]
-    assert hours == [8]
+    assert crons == ["0 8 * * 0"]
     assert "workflow_dispatch" in wf[True]
 
 
@@ -106,10 +106,13 @@ class _FixedDate:
         return self._pinned
 
 
-def test_delta_cron_uses_dense_sparse_horizon(monkeypatch):
-    """The cron path regenerates dates via dense_sparse over the 90d window (NOT
-    build_queue_plan's every-day list): bounded count (<= the prior 30 every-day Delta dates),
-    dense near-term, reaching ~90 days out."""
+def test_dense_sparse_recovery_horizon_is_exactly_one_date():
+    today = date(2026, 6, 25)
+    assert dense_sparse_dates(today, dense_days=14, sparse_step=4, max_day=1) == [today]
+
+
+def test_delta_cron_uses_exactly_one_recovery_date(monkeypatch):
+    """The weekly recovery cron must remain one selected route by one date."""
     import delta_browser_scrape as ep
 
     captured = {}
@@ -124,13 +127,10 @@ def test_delta_cron_uses_dense_sparse_horizon(monkeypatch):
 
     today = date(2026, 6, 25)
     monkeypatch.setattr(ep, "date", _FixedDate(today))
-    monkeypatch.setattr(ep, "SCRAPE_DAYS", 90)  # the workflow sets DELTA_SCRAPE_DAYS=90
+    monkeypatch.setattr(ep, "SCRAPE_DAYS", 1)  # the workflow sets DELTA_SCRAPE_DAYS=1
 
     ep._run_cron(shard_index=0, shards=1)
 
     dates = captured["dates"]
-    offsets = sorted((d - today).days for d in dates)
     assert dates != ["IGNORED_DATE"]  # regenerated, not the queue's flat every-day list
-    assert offsets[:5] == [0, 1, 2, 3, 4]  # dense near-term, every day
-    assert 85 <= offsets[-1] < 90  # reaches the ~90d horizon (exclusive upper bound)
-    assert len(dates) <= 30  # bounded under the prior 30 every-day Delta dates
+    assert dates == [today]

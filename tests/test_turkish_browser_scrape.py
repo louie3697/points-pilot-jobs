@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 from turkish_browser_scrape import _build_plan, _parse_dates_csv
 
@@ -40,3 +41,75 @@ def test_turkish_cron_uses_queue(monkeypatch):
     assert calls["max_legs"] == ep.MAX_LEGS_PER_SHARD
     assert calls["shard_index"] == 0
     assert calls["shards"] == 1
+
+
+def _capture_cron(monkeypatch, *, route_jobs, source_rows, shard_index):
+    import turkish_browser_scrape as ep
+
+    captured = {}
+    freshness_calls = []
+    monkeypatch.setattr(
+        ep.common,
+        "build_queue_plan",
+        lambda *args, **kwargs: (route_jobs, [date(2026, 7, 24), date(2026, 7, 25)]),
+    )
+    monkeypatch.setattr(
+        ep.common,
+        "freshness",
+        lambda source, logger: freshness_calls.append(source)
+        or {"turkish_rows": source_rows, "turkish_newest_age_h": None},
+    )
+    monkeypatch.setattr(
+        ep.common,
+        "run_scrape",
+        lambda scraper, pairs, dates, **kwargs: captured.update(
+            pairs=pairs, dates=dates, kwargs=kwargs
+        )
+        or SimpleNamespace(status="healthy"),
+    )
+    monkeypatch.setattr("scrapers.turkish.TurkishScraper", lambda *args, **kwargs: object())
+
+    ep._run_cron(shard_index=shard_index, shards=3)
+    return captured, freshness_calls
+
+
+def test_turkish_shard_zero_uses_one_unqueued_recovery_probe_when_zero_data(monkeypatch):
+    captured, freshness_calls = _capture_cron(
+        monkeypatch, route_jobs=[], source_rows=0, shard_index=0
+    )
+
+    assert freshness_calls == ["turkish"]
+    assert captured["pairs"] == [("JFK", "IST")]
+    assert captured["dates"] == [date.today()]
+    assert captured["kwargs"]["route_jobs"] is None
+
+
+def test_turkish_nonzero_shards_do_not_use_zero_data_recovery_probe(monkeypatch):
+    captured, freshness_calls = _capture_cron(
+        monkeypatch, route_jobs=[], source_rows=0, shard_index=1
+    )
+
+    assert freshness_calls == []
+    assert captured["pairs"] == []
+    assert captured["kwargs"]["route_jobs"] == []
+
+
+def test_turkish_existing_rows_suppress_zero_data_recovery_probe(monkeypatch):
+    captured, freshness_calls = _capture_cron(
+        monkeypatch, route_jobs=[], source_rows=1, shard_index=0
+    )
+
+    assert freshness_calls == ["turkish"]
+    assert captured["pairs"] == []
+    assert captured["kwargs"]["route_jobs"] == []
+
+
+def test_turkish_due_queue_work_suppresses_zero_data_recovery_probe(monkeypatch):
+    due_job = SimpleNamespace(origin="EWR", dest="IST")
+    captured, freshness_calls = _capture_cron(
+        monkeypatch, route_jobs=[due_job], source_rows=0, shard_index=0
+    )
+
+    assert freshness_calls == []
+    assert captured["pairs"] == []
+    assert captured["kwargs"]["route_jobs"] == [due_job]

@@ -16,6 +16,7 @@ import sys
 from datetime import date
 
 import browser_scrape_common as common
+from config.routes import TURKISH_MED_ROUTES
 from config.settings import CRON_MAX_LEGS_PER_SHARD
 from pipeline.obs import flush_then_hard_exit
 
@@ -33,6 +34,7 @@ logger = logging.getLogger("turkish_browser_scrape")
 # the daily cron drains the scored due-batch instead of a static list.
 MAX_LEGS_PER_SHARD = CRON_MAX_LEGS_PER_SHARD["turkish"]
 SCRAPE_DAYS = int(os.getenv("TURKISH_SCRAPE_DAYS", "3"))  # near-term window, scraped every day
+RECOVERY_ROUTE = TURKISH_MED_ROUTES[0]
 
 # On-demand single-route mode (workflow_dispatch inputs); empty in the daily cron.
 ROUTE_ORIGIN = os.getenv("TURKISH_ROUTE_ORIGIN", "").strip()
@@ -66,14 +68,29 @@ def _run_cron(shard_index: int, shards: int) -> common.ScrapeOutcome:
         "turkish", shard_index=shard_index, shards=shards,
         max_legs=MAX_LEGS_PER_SHARD, scrape_days=SCRAPE_DAYS, today=date.today(),
     )
+    pairs: list[tuple[str, str]] = []
+    run_route_jobs = route_jobs
+    if not route_jobs and shard_index == 0:
+        source_snapshot = common.freshness("turkish", logger)
+        if source_snapshot.get("turkish_rows") == 0:
+            # Recovery work is deliberately outside the scored queue: one configured route/date
+            # proves the upstream contract without marking unrelated queue jobs successful. A
+            # failure remains eligible for the next daily shard-0 fallback.
+            pairs = [RECOVERY_ROUTE]
+            dates = [date.today()]
+            run_route_jobs = None
+            logger.warning(
+                "No Turkish rows and no due queue work — shard 0 running recovery probe %s→%s",
+                *RECOVERY_ROUTE,
+            )
     logger.info(
-        "Cron queue mode (shard %d/%d): %d due routes × %d dates",
-        shard_index, shards, len(route_jobs), len(dates),
+        "Cron mode (shard %d/%d): %d due routes, %d recovery routes × %d dates",
+        shard_index, shards, len(route_jobs), len(pairs), len(dates),
     )
     return common.run_scrape(
-        TurkishScraper(), [], dates,
+        TurkishScraper(), pairs, dates,
         source="turkish", service="point-pilot-turkish", airline="TK",
-        heartbeat_url=TURKISH_HEARTBEAT_URL, logger=logger, route_jobs=route_jobs,
+        heartbeat_url=TURKISH_HEARTBEAT_URL, logger=logger, route_jobs=run_route_jobs,
     )
 
 

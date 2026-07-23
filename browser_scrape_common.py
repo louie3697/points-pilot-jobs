@@ -182,15 +182,23 @@ def ping_heartbeat(url: str, logger: logging.Logger) -> None:
 
 
 def freshness(source: str, logger: logging.Logger) -> dict:
-    """``{<source>_rows, <source>_newest_age_h}`` snapshot for the metric. Best-effort/no-raise."""
+    """Bounded source-row freshness snapshot for the metric. Best-effort/no-raise.
+
+    The existing total-row and newest-age fields remain stable for dashboards. The unexpired-row
+    count is the authoritative idle-heartbeat signal because source TTLs vary per stamped row.
+    """
     try:
         from sqlalchemy import text
 
         from pp_db.engine import get_engine
 
         with get_engine().connect() as c:
-            total, newest = c.execute(
-                text("SELECT count(*), max(scraped_at_utc) FROM pp.flights WHERE source = :source"),
+            total, newest, unexpired = c.execute(
+                text(
+                    "SELECT count(*), max(scraped_at_utc), "
+                    "count(*) FILTER (WHERE expires_at_utc > now()) "
+                    "FROM pp.flights WHERE source = :source"
+                ),
                 {"source": source},
             ).fetchone()
         age_h = None
@@ -198,10 +206,24 @@ def freshness(source: str, logger: logging.Logger) -> dict:
             if newest.tzinfo is None:
                 newest = newest.replace(tzinfo=timezone.utc)
             age_h = round((datetime.now(timezone.utc) - newest).total_seconds() / 3600, 1)
-        return {f"{source}_rows": int(total or 0), f"{source}_newest_age_h": age_h}
+        return {
+            f"{source}_rows": int(total or 0),
+            f"{source}_newest_age_h": age_h,
+            f"{source}_unexpired_rows": int(unexpired or 0),
+        }
     except Exception as exc:  # noqa: BLE001
         logger.warning("freshness snapshot failed: %s", exc)
         return {}
+
+
+def _has_fresh_source_data(snapshot: dict, source: str) -> bool:
+    """Whether the snapshot proves this source has rows whose stamped expiry is in the future."""
+    unexpired_rows = snapshot.get(f"{source}_unexpired_rows")
+    return (
+        isinstance(unexpired_rows, int)
+        and not isinstance(unexpired_rows, bool)
+        and unexpired_rows > 0
+    )
 
 
 def _tier_for_job(job, default: str) -> str:
@@ -392,6 +414,7 @@ def run_scrape(
     )
 
     duration_s = round(time.monotonic() - started, 1)
+    freshness_snapshot = freshness(source, logger)
     ship_metric(
         {
             "event": "scrape_run",
@@ -413,12 +436,15 @@ def run_scrape(
             "queue_selected_routes": queue_selected_routes,
             "queue_left_due_estimate": queue_left_due_estimate,
             "queue_fill_ratio": queue_fill_ratio,
-            **freshness(source, logger),
+            **freshness_snapshot,
         }
     )
-    # Idle on-demand matrix shards are healthy exit-0 no-ops, but cannot prove the requested
-    # scrape succeeded. Cron queue mode may ping with no due work to prove its scheduler ran.
-    if status == "healthy" and (queue_mode or routes_with_progress > 0):
+    # A healthy process is not enough to claim ingestion health. Ping only after this run validated
+    # at least one response (including valid-empty), or when the same bounded metric snapshot proves
+    # that the source already has at least one row whose stamped expiry is still in the future.
+    if status == "healthy" and (
+        routes_with_progress > 0 or _has_fresh_source_data(freshness_snapshot, source)
+    ):
         ping_heartbeat(heartbeat_url, logger)
     logger.info(
         "=== done — status=%s %d %s records "
