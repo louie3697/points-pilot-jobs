@@ -81,4 +81,3 @@ These monitoring changes are operational configuration, not repository code.
   still return an unsuccessful response; that is an expected red recovery signal, while the
   bounded request shape is the deployment acceptance criterion.
 - Re-read the affected Better Stack heartbeats and confirm their resulting cadence/status.
-
