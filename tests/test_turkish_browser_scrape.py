@@ -1,7 +1,27 @@
 from datetime import date
 from types import SimpleNamespace
 
+import yaml
+
 from turkish_browser_scrape import _build_plan, _parse_dates_csv
+
+_WF = ".github/workflows/turkish-browser-scrape.yml"
+
+
+def test_turkish_workflow_is_one_daily_recovery_probe():
+    with open(_WF) as workflow_file:
+        wf = yaml.safe_load(workflow_file)
+
+    assert [entry["cron"] for entry in wf[True]["schedule"]] == ["0 10 * * *"]
+    assert "workflow_dispatch" in wf[True]
+
+    job = wf["jobs"]["scrape"]
+    env = job["steps"][-1]["env"]
+    assert job["strategy"]["matrix"]["shard"] == [0]
+    assert env["TURKISH_SHARDS"] == "1"
+    assert env["TURKISH_MAX_LEGS_PER_SHARD"] == "1"
+    assert env["TURKISH_SCRAPE_DAYS"] == "1"
+    assert env["TURKISH_SHARD_INDEX"] == "${{ matrix.shard }}"
 
 
 def test_parse_dates_csv_valid_and_invalid():

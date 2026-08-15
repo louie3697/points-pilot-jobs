@@ -1,8 +1,9 @@
 name: turkish-browser-scrape
 
 # Turkish Airlines Miles&Smiles award scrape, run entirely in this repo (GH Actions / Azure IP
-# clears Turkish's TLS-fingerprint block + PerimeterX where Fly's IP can't). Headful Chrome under
-# xvfb. Writes Turkish rows into Postgres `flights`. The availability API is the public
+# clears Turkish's TLS-fingerprint block + PerimeterX where Fly's IP can't). While the upstream
+# response is unsuccessful, scheduled work is a daily one-route, one-date recovery probe. Headful
+# Chrome under xvfb. Writes Turkish rows into Postgres `flights`. The availability API is the public
 # /api/v1/availability (moduleType:AWARD); session headers are client-generated UUIDs and PX 428
 # crypto-challenges are auto-solved + retried in-page. (websockets pinned <15 — see requirements.)
 on:
@@ -17,7 +18,7 @@ on:
         required: false
         default: ""
       dates:
-        description: "Comma-separated ISO dates (YYYY-MM-DD). Blank = near-term 5-day window."
+        description: "Comma-separated ISO dates (YYYY-MM-DD). Blank = one recovery date."
         required: false
         default: ""
   schedule:
@@ -41,14 +42,12 @@ jobs:
         password: ${{ secrets.GITHUB_TOKEN }}
       options: --shm-size=2g
     timeout-minutes: 60
-    # Turkish has ~50 directed legs, but the per-shard cap is 20 — one shard could only
-    # cover part of the catalogue per day. Three parallel runs on separate runner IPs
-    # stride-shard the scored due-batch, so 3 × 20 = 60 legs = full daily coverage. On-demand
-    # single-route dispatch still spawns both shards, but only shard 0 does the work.
+    # Turkish scheduled recovery is intentionally limited to one route and one date while the
+    # upstream response is unsuccessful. Manual single-route dispatch remains available.
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2]
+        shard: [0]
     steps:
       - uses: actions/checkout@v6
       - name: Scrape Turkish (headful Chrome under xvfb, Azure IP)
@@ -59,8 +58,9 @@ jobs:
           BETTERSTACK_LOGS_TOKEN: ${{ secrets.BETTERSTACK_LOGS_TOKEN }}
           BETTERSTACK_LOGS_INGEST_URL: ${{ secrets.BETTERSTACK_LOGS_INGEST_URL }}
           TURKISH_HEARTBEAT_URL: ${{ secrets.TURKISH_HEARTBEAT_URL }}
-          TURKISH_SCRAPE_DAYS: "5"
-          TURKISH_SHARDS: "3"
+          TURKISH_SCRAPE_DAYS: "1"
+          TURKISH_SHARDS: "1"
+          TURKISH_MAX_LEGS_PER_SHARD: "1"
           TURKISH_SHARD_INDEX: ${{ matrix.shard }}
           TURKISH_ROUTE_ORIGIN: ${{ inputs.origin }}
           TURKISH_ROUTE_DEST: ${{ inputs.destination }}
