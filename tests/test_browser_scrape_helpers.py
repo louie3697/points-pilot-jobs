@@ -1,7 +1,7 @@
 """Pure (no-DB) unit tests for browser_scrape_common helpers — _tier_for_job + dense_sparse_dates.
 
-These are hermetic (no live pp schema needed), so they live in their own module rather than
-test_browser_scrape_common.py, which module-level-skips when DATABASE_URL is unset.
+These are hermetic (no live pp schema needed), so they live in their own module rather than the
+database-backed queue tests in test_browser_scrape_common.py.
 """
 
 from datetime import date

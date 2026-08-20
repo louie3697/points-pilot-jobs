@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 import httpx
 
-from scrapers.base import HttpScraper
+import browser_scrape_common as common
+from scrapers.base import HttpScraper, RequestStats
 
 
 class ProbeScraper(HttpScraper):
@@ -98,3 +100,40 @@ def test_request_stats_classifies_availability_responses():
     assert stats.blocked == 2
     assert stats.rate_limited == 1
     assert stats.server_errors == 1
+
+
+def test_run_scrape_reports_upstream_requests_without_database_cleanup(monkeypatch):
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+    monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
+
+    class _Scraper:
+        source = "delta"
+
+        def __init__(self):
+            self.closed = False
+
+        def scrape(self, origin, dest, travel):
+            return []
+
+        def close(self):
+            self.closed = True
+
+        def request_stats(self):
+            assert self.closed
+            return RequestStats(attempts=2)
+
+    outcome = common.run_scrape(
+        _Scraper(),
+        [("SEA", "BOS")],
+        [date(2026, 8, 20)],
+        source="delta",
+        service="point-pilot-delta",
+        airline="DL",
+        heartbeat_url="",
+        logger=logging.getLogger("test-upstream-requests"),
+    )
+
+    assert outcome.upstream_requests == 2
+    assert metrics[0]["upstream_requests"] == 2
