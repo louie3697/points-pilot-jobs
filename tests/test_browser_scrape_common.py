@@ -16,10 +16,11 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 if not os.environ.get("DATABASE_URL"):
-    pytest.skip(
-        "DATABASE_URL unset — run_scrape queue-mode test needs a live pp schema",
-        allow_module_level=True,
+    requires_database = pytest.mark.skip(
+        reason="DATABASE_URL unset — queue-mode test needs a live pp schema"
     )
+else:
+    requires_database = pytest.mark.skipif(False, reason="DATABASE_URL is set")
 
 from sqlalchemy import text  # noqa: E402
 
@@ -33,6 +34,9 @@ from pp_db.engine import get_engine  # noqa: E402
 def clean_routes():
     """Empty routes_queue around each test so the seeded due-set is deterministic. ``run_scrape``'s
     own ``close_connection()`` (the facade's) is safe — it just drops the thread-local conn."""
+    if not os.environ.get("DATABASE_URL"):
+        yield
+        return
     with get_engine().begin() as c:
         c.execute(text("TRUNCATE pp.routes_queue RESTART IDENTITY CASCADE"))
     yield
@@ -47,6 +51,7 @@ def _seed_due(n, airline="delta"):
         c.execute(text("UPDATE pp.routes_queue SET next_scrape_at_utc = now() - INTERVAL '1 hour'"))
 
 
+@requires_database
 def test_build_queue_plan_strides_disjoint_and_caps():
     _seed_due(12)
     today = date(2026, 6, 18)
@@ -63,6 +68,7 @@ def test_build_queue_plan_strides_disjoint_and_caps():
     assert len(dates) == 3
 
 
+@requires_database
 def test_run_scrape_queue_mode_marks_adaptively():
     _seed_due(1)
     today = date(2026, 6, 18)
@@ -100,6 +106,7 @@ def test_run_scrape_queue_mode_marks_adaptively():
     assert row is not None  # the scraped route was marked adaptively
 
 
+@requires_database
 def test_run_scrape_queue_mode_blocked_route_stays_due():
     """A blocked route is not marked scraped, but it is backed off briefly."""
     from scrapers.base import ScraperBlockedError
@@ -149,6 +156,7 @@ def test_run_scrape_queue_mode_blocked_route_stays_due():
     assert expected_min <= delta <= expected_max
 
 
+@requires_database
 def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(monkeypatch):
     from scrapers.base import ScraperBlockedError
 
@@ -194,6 +202,7 @@ def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(
     assert metric["blocked_backoff_min"] == SCRAPER_BLOCK_COOLDOWN_MIN
 
 
+@requires_database
 def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch):
     metrics: list[dict] = []
     monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
@@ -231,3 +240,40 @@ def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch):
     assert metric["queue_selected_routes"] == 2
     assert metric["queue_left_due_estimate"] == 4
     assert metric["queue_fill_ratio"] == 0.33
+
+
+def test_run_scrape_reports_actual_upstream_requests(monkeypatch):
+    metrics: list[dict] = []
+    monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
+    monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
+    monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
+
+    class _Scraper:
+        source = "delta"
+
+        def __init__(self):
+            self.closed = False
+
+        def scrape(self, origin, dest, travel):
+            return []
+
+        def close(self):
+            self.closed = True
+
+        def request_stats(self):
+            assert self.closed
+            return type("Stats", (), {"attempts": 2})()
+
+    outcome = common.run_scrape(
+        _Scraper(),
+        [("SEA", "BOS")],
+        [date(2026, 8, 20)],
+        source="delta",
+        service="point-pilot-delta",
+        airline="DL",
+        heartbeat_url="",
+        logger=logging.getLogger("test-upstream-requests"),
+    )
+
+    assert outcome.upstream_requests == 2
+    assert metrics[0]["upstream_requests"] == 2
