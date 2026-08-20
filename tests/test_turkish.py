@@ -221,6 +221,7 @@ def test_response_diagnostic_reports_only_bounded_contract_shape(monkeypatch):
 def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monkeypatch, caplog):
     markers = {
         "provider_message": "MESSAGE_SECRET_MARKER",
+        "action_data": "ACTION_DATA_SECRET_MARKER",
         "body": "BODY_SECRET_MARKER",
         "header": "HEADER_SECRET_MARKER",
         "cookie": "COOKIE_SECRET_MARKER",
@@ -232,6 +233,7 @@ def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monke
         "success": False,
         "data": {"deep": {"value": markers["nested"]}},
         "message": markers["provider_message"],
+        "actionData": {"value": markers["action_data"]},
         "body": markers["body"],
         "headers": {"Authorization": markers["header"]},
         "cookies": markers["cookie"],
@@ -260,6 +262,16 @@ def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monke
     rendered = f"{exc.value}\n{caplog.text}"
     for marker in markers.values():
         assert marker not in rendered
+    for forbidden_field in (
+        "actionData",
+        "message",
+        "body",
+        "headers",
+        "cookies",
+        "requestData",
+        "requestId",
+    ):
+        assert forbidden_field not in rendered
     assert "actionCode=TK_BLOCKED" in rendered
     assert "LEGACY_CODE_MUST_NOT_APPEAR" not in rendered
     assert len(str(exc.value)) <= 320

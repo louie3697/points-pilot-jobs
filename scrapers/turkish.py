@@ -52,7 +52,6 @@ _CABIN_MAP: dict[str, str] = {
 }
 
 
-_SAFE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,39}")
 _SAFE_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 _UUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
@@ -169,10 +168,6 @@ class TurkishResponseError(RuntimeError):
                 parts.append(f"provider=[{','.join(provider)}]")
             data_type = type(payload["data"]).__name__ if "data" in payload else "missing"
             parts.append(f"data_type={data_type}")
-            keys = sorted(
-                key for key in payload if isinstance(key, str) and _SAFE_KEY.fullmatch(key)
-            )[:20]
-            parts.append(f"keys=[{','.join(keys)}]")
         super().__init__(f"Turkish response failure ({', '.join(parts)})"[:320])
 
 
