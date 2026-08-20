@@ -123,10 +123,31 @@ def test_normalize_accepts_valid_empty_options():
     assert TurkishScraper().normalize(_resp([]), "JFK", "IST", TRAVEL) == []
 
 
+def test_provider_failure_is_not_retried(monkeypatch):
+    payload = {"success": False, "actionCode": "NO_AVAILABILITY", "data": None}
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 200,
+            "attempts": 1,
+            "statuses": [200],
+            "text": json.dumps(payload),
+        }
+    )
+    scraper, raw = _fetch_with_scraper(monkeypatch, wire)
+
+    with pytest.raises(TurkishResponseError) as exc:
+        scraper.normalize(raw, "JFK", "IST", TRAVEL)
+
+    assert exc.value.category == "provider_failed"
+    assert scraper.request_stats().attempts == 1
+    assert scraper.request_stats().retries == 0
+
+
 @pytest.mark.parametrize(
     ("raw", "category"),
     [
-        ({"success": False, "data": None, "message": "secret-body"}, "unsuccessful"),
+        ({"success": False, "data": None, "message": "secret-body"}, "provider_failed"),
         ({"success": True, "data": {}}, "missing_envelope"),
         ({"success": True}, "missing_envelope"),
         ({}, "missing_envelope"),
@@ -134,7 +155,7 @@ def test_normalize_accepts_valid_empty_options():
         (_resp([{"segmentList": [_seg()], "fareCategory": "not-a-map"}]), "malformed_options"),
     ],
 )
-def test_normalize_classifies_unsuccessful_envelope_and_option_failures(raw, category):
+def test_normalize_classifies_provider_and_option_failures(raw, category):
     with pytest.raises(TurkishResponseError) as exc:
         TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
 
@@ -154,21 +175,47 @@ def test_response_diagnostic_reports_only_bounded_contract_shape(monkeypatch):
         "status": "ERROR",
         "message": "provider-message-must-not-appear",
         "errorCode": "TK_AVAIL_42",
+        "actionCode": "NO_AVAILABILITY",
+        "actionData": {"code": "ACTION_DATA_SECRET"},
+        "statusDetailList": [
+            {
+                "code": "TK_DETAIL_1",
+                "status": "FAILED",
+                "message": "DETAIL_MESSAGE_SECRET",
+                "nested": {"code": "NESTED_CODE_SECRET"},
+            },
+            {"statusCode": 451},
+        ],
         "data": None,
     }
-    wire = json.dumps({"kind": "response", "status": 503, "text": json.dumps(payload)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 503,
+            "attempts": 1,
+            "statuses": [503],
+            "text": json.dumps(payload),
+        }
+    )
     raw = _fetch_result(monkeypatch, wire)
 
     with pytest.raises(TurkishResponseError) as exc:
         TurkishScraper().normalize(raw, "JFK", "IST", TRAVEL)
 
     diagnostic = str(exc.value)
-    assert "category=unsuccessful" in diagnostic
+    assert "category=provider_failed" in diagnostic
     assert "http_status=503" in diagnostic
-    assert "keys=[data,errorCode,message,status,statusCode,success,zKey]" in diagnostic
+    assert "actionCode=NO_AVAILABILITY" in diagnostic
+    assert "statusDetailList.code=TK_DETAIL_1" in diagnostic
+    assert "statusDetailList.status=FAILED" in diagnostic
+    assert "statusDetailList.statusCode=451" in diagnostic
     assert "data_type=NoneType" in diagnostic
-    assert "provider=[errorCode=TK_AVAIL_42,status=ERROR,statusCode=451]" in diagnostic
+    assert "errorCode=TK_AVAIL_42" not in diagnostic
+    assert "status=ERROR" not in diagnostic
     assert "provider-message-must-not-appear" not in diagnostic
+    assert "ACTION_DATA_SECRET" not in diagnostic
+    assert "DETAIL_MESSAGE_SECRET" not in diagnostic
+    assert "NESTED_CODE_SECRET" not in diagnostic
 
 
 def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monkeypatch, caplog):
@@ -190,9 +237,18 @@ def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monke
         "cookies": markers["cookie"],
         "requestData": {"payload": markers["request"]},
         "requestId": markers["uuid"],
-        "errorCode": "TK_BLOCKED",
+        "errorCode": "LEGACY_CODE_MUST_NOT_APPEAR",
+        "actionCode": "TK_BLOCKED",
     }
-    wire = json.dumps({"kind": "response", "status": 429, "text": json.dumps(payload)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 429,
+            "attempts": 1,
+            "statuses": [429],
+            "text": json.dumps(payload),
+        }
+    )
     raw = _fetch_result(monkeypatch, wire)
 
     with pytest.raises(TurkishResponseError) as exc:
@@ -204,7 +260,8 @@ def test_response_diagnostic_redacts_secret_values_from_exception_and_logs(monke
     rendered = f"{exc.value}\n{caplog.text}"
     for marker in markers.values():
         assert marker not in rendered
-    assert "errorCode=TK_BLOCKED" in rendered
+    assert "actionCode=TK_BLOCKED" in rendered
+    assert "LEGACY_CODE_MUST_NOT_APPEAR" not in rendered
     assert len(str(exc.value)) <= 320
 
 
@@ -237,7 +294,15 @@ def _perimeterx_block_payload() -> tuple[dict, list[str]]:
 
 def test_http_403_perimeterx_envelope_raises_shared_block_error(monkeypatch):
     payload, secret_values = _perimeterx_block_payload()
-    wire = json.dumps({"kind": "response", "status": 403, "text": json.dumps(payload)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 403,
+            "attempts": 1,
+            "statuses": [403],
+            "text": json.dumps(payload),
+        }
+    )
     raw = _fetch_result(monkeypatch, wire)
 
     with pytest.raises(ScraperBlockedError) as exc:
@@ -249,11 +314,17 @@ def test_http_403_perimeterx_envelope_raises_shared_block_error(monkeypatch):
         assert value not in rendered
 
 
-def test_http_403_perimeterx_envelope_reports_blocked_run_without_secret_logs(
-    monkeypatch, caplog
-):
+def test_http_403_perimeterx_envelope_reports_blocked_run_without_secret_logs(monkeypatch, caplog):
     payload, secret_values = _perimeterx_block_payload()
-    wire = json.dumps({"kind": "response", "status": 403, "text": json.dumps(payload)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 403,
+            "attempts": 1,
+            "statuses": [403],
+            "text": json.dumps(payload),
+        }
+    )
     raw = _fetch_result(monkeypatch, wire)
     metrics = []
     heartbeats = []
@@ -268,9 +339,7 @@ def test_http_403_perimeterx_envelope_reports_blocked_run_without_secret_logs(
     monkeypatch.setattr("pipeline.obs.ship_metric", lambda metric: metrics.append(metric))
     monkeypatch.setattr(common, "freshness", lambda *args, **kwargs: {})
     monkeypatch.setattr("pp_db.autocommit.close_connection", lambda: None)
-    monkeypatch.setattr(
-        common, "ping_heartbeat", lambda url, logger: heartbeats.append(url)
-    )
+    monkeypatch.setattr(common, "ping_heartbeat", lambda url, logger: heartbeats.append(url))
 
     with caplog.at_level(logging.WARNING):
         outcome = common.run_scrape(
@@ -296,7 +365,15 @@ def test_http_403_perimeterx_envelope_reports_blocked_run_without_secret_logs(
 def test_non_2xx_valid_shaped_response_is_bounded_http_error(monkeypatch):
     payload = _resp([_opt()])
     payload["message"] = "NON_2XX_BODY_SECRET"
-    wire = json.dumps({"kind": "response", "status": 503, "text": json.dumps(payload)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 503,
+            "attempts": 1,
+            "statuses": [503],
+            "text": json.dumps(payload),
+        }
+    )
     raw = _fetch_result(monkeypatch, wire)
 
     with pytest.raises(TurkishResponseError) as exc:
@@ -311,14 +388,25 @@ def test_non_2xx_valid_shaped_response_is_bounded_http_error(monkeypatch):
 class _EvaluateTab:
     def __init__(self, value):
         self.value = value
+        self.calls = 0
 
     async def evaluate(self, *_args, **_kwargs):
+        self.calls += 1
         return self.value
 
 
 def _fetch_result(monkeypatch, evaluated):
     scraper = TurkishScraper()
 
+    return _fetch_with_existing_scraper(monkeypatch, scraper, evaluated)
+
+
+def _fetch_with_scraper(monkeypatch, evaluated):
+    scraper = TurkishScraper()
+    return scraper, _fetch_with_existing_scraper(monkeypatch, scraper, evaluated)
+
+
+def _fetch_with_existing_scraper(monkeypatch, scraper, evaluated):
     async def fake_ensure_browser():
         return _EvaluateTab(evaluated)
 
@@ -330,11 +418,117 @@ def _fetch_result(monkeypatch, evaluated):
     return asyncio.run(scraper.fetch_raw("JFK", "IST", TRAVEL))
 
 
+def test_turkish_challenge_has_one_retry_maximum(monkeypatch):
+    scraper = TurkishScraper()
+    assert scraper._px_retries == 1
+    wire = json.dumps(
+        {
+            "kind": "challenge",
+            "status": 428,
+            "attempts": 2,
+            "statuses": [428, 428],
+        }
+    )
+
+    tab = _EvaluateTab(wire)
+
+    async def fake_ensure_browser():
+        return tab
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scraper, "_ensure_browser", fake_ensure_browser)
+    monkeypatch.setattr("scrapers.turkish.asyncio.sleep", no_sleep)
+
+    with pytest.raises(TurkishResponseError, match="category=challenge"):
+        asyncio.run(scraper.fetch_raw("JFK", "IST", TRAVEL))
+
+    stats = scraper.request_stats()
+    assert stats.attempts == 2
+    assert stats.retries == 1
+    assert tab.calls == 1
+
+
 def test_fetch_raw_returns_populated_response(monkeypatch):
     response = _resp([_opt()])
-    wire = json.dumps({"kind": "response", "status": 200, "text": json.dumps(response)})
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 200,
+            "attempts": 1,
+            "statuses": [200],
+            "text": json.dumps(response),
+        }
+    )
 
     assert _fetch_result(monkeypatch, wire) == response
+
+
+def test_fetch_raw_records_each_bounded_attempt_and_status(monkeypatch):
+    response = _resp([_opt()])
+    wire = json.dumps(
+        {
+            "kind": "response",
+            "status": 503,
+            "attempts": 2,
+            "statuses": [428, 503],
+            "text": json.dumps(response),
+        }
+    )
+
+    scraper, raw = _fetch_with_scraper(monkeypatch, wire)
+
+    assert raw == response
+    stats = scraper.request_stats()
+    assert stats.attempts == 2
+    assert stats.retries == 1
+    assert stats.server_errors == 1
+
+
+def test_fetch_raw_records_transport_attempt_without_an_http_status(monkeypatch):
+    wire = json.dumps({"kind": "transport", "attempts": 2, "statuses": [428]})
+    scraper = TurkishScraper()
+
+    with pytest.raises(TurkishResponseError, match="category=transport"):
+        _fetch_with_existing_scraper(monkeypatch, scraper, wire)
+
+    stats = scraper.request_stats()
+    assert stats.attempts == 2
+    assert stats.retries == 1
+
+
+@pytest.mark.parametrize(
+    ("attempts", "statuses", "status"),
+    [
+        (None, [], 200),
+        (True, [], 200),
+        (-1, [], 200),
+        (3, [], 200),
+        (1.0, [], 200),
+        (1, [True], 200),
+        (1, ["200"], 200),
+        (1, [200, 200], 200),
+        (1, [200], True),
+    ],
+)
+def test_fetch_raw_rejects_malformed_attempt_metadata_without_counting(
+    monkeypatch, attempts, statuses, status
+):
+    scraper = TurkishScraper()
+    wire = {
+        "kind": "response",
+        "status": status,
+        "statuses": statuses,
+        "text": json.dumps(_resp([])),
+    }
+    if attempts is not None:
+        wire["attempts"] = attempts
+
+    with pytest.raises(TurkishResponseError, match="category=transport"):
+        _fetch_with_existing_scraper(monkeypatch, scraper, json.dumps(wire))
+
+    assert scraper.request_stats().attempts == 0
 
 
 @pytest.mark.parametrize(
@@ -342,8 +536,18 @@ def test_fetch_raw_returns_populated_response(monkeypatch):
     [
         (None, "transport"),
         ("<html>cookie=super-secret</html>", "non_json"),
-        (json.dumps({"kind": "challenge", "status": 428}), "challenge"),
-        (json.dumps({"kind": "transport"}), "transport"),
+        (
+            json.dumps(
+                {
+                    "kind": "challenge",
+                    "status": 428,
+                    "attempts": 2,
+                    "statuses": [428, 428],
+                }
+            ),
+            "challenge",
+        ),
+        (json.dumps({"kind": "transport", "attempts": 1, "statuses": []}), "transport"),
     ],
 )
 def test_fetch_raw_classifies_transport_non_json_and_exhausted_challenge(

@@ -58,7 +58,7 @@ _UUID = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
 )
-_PROVIDER_FIELDS = ("code", "errorCode", "errorStatus", "status", "statusCode")
+_STATUS_DETAIL_FIELDS = ("code", "status", "statusCode")
 _SECRET_HINTS = ("secret", "token", "bearer", "cookie", "authorization", "password")
 _PERIMETERX_BLOCK_KEYS = frozenset(
     {
@@ -94,13 +94,62 @@ def _safe_primitive(value: object) -> str | None:
     return None
 
 
+def _safe_provider_diagnostics(payload: dict) -> list[str]:
+    """Return only explicitly allow-listed, bounded provider code/status values."""
+    provider = []
+    action_code = _safe_primitive(payload.get("actionCode"))
+    if action_code is not None:
+        provider.append(f"actionCode={action_code}")
+
+    details = payload.get("statusDetailList")
+    if isinstance(details, list):
+        for detail in details[:10]:
+            if not isinstance(detail, dict):
+                continue
+            for field in _STATUS_DETAIL_FIELDS:
+                rendered = _safe_primitive(detail.get(field))
+                if rendered is not None:
+                    provider.append(f"statusDetailList.{field}={rendered}")
+    return provider[:20]
+
+
+def _is_http_status(value: object) -> bool:
+    """Accept real integer HTTP statuses, explicitly excluding booleans."""
+    return type(value) is int and 100 <= value <= 599
+
+
+def _transport_metadata(wire: dict) -> tuple[int, list[int]] | None:
+    """Validate bounded attempt metadata without retaining any request details."""
+    attempts = wire.get("attempts")
+    statuses = wire.get("statuses")
+    if type(attempts) is not int or not 0 <= attempts <= 2:
+        return None
+    if (
+        not isinstance(statuses, list)
+        or len(statuses) > attempts
+        or any(not _is_http_status(status) for status in statuses)
+    ):
+        return None
+
+    status = wire.get("status")
+    if "status" in wire and not _is_http_status(status):
+        return None
+    if wire.get("kind") in ("response", "challenge"):
+        if attempts == 0 or len(statuses) != attempts or status != statuses[-1]:
+            return None
+    elif "status" in wire and (not statuses or status != statuses[-1]):
+        return None
+    return attempts, statuses
+
+
 class _ResponsePayload(dict):
     """Parsed provider JSON carrying body-free HTTP metadata into ``normalize``."""
 
     def __init__(self, payload: dict, http_status: object) -> None:
         super().__init__(payload)
         self.http_status = (
-            http_status if isinstance(http_status, int) and not isinstance(http_status, bool)
+            http_status
+            if isinstance(http_status, int) and not isinstance(http_status, bool)
             else None
         )
 
@@ -108,30 +157,22 @@ class _ResponsePayload(dict):
 class TurkishResponseError(RuntimeError):
     """Typed, bounded Turkish response failure with no raw response or request data."""
 
-    def __init__(
-        self, category: str, *, status: object = None, payload: object = None
-    ) -> None:
+    def __init__(self, category: str, *, status: object = None, payload: object = None) -> None:
         self.category = category
         safe_status = status if isinstance(status, int) and not isinstance(status, bool) else None
         parts = [f"category={category}"]
         if safe_status is not None:
             parts.append(f"http_status={safe_status}")
         if isinstance(payload, dict):
+            provider = _safe_provider_diagnostics(payload)
+            if provider:
+                parts.append(f"provider=[{','.join(provider)}]")
+            data_type = type(payload["data"]).__name__ if "data" in payload else "missing"
+            parts.append(f"data_type={data_type}")
             keys = sorted(
                 key for key in payload if isinstance(key, str) and _SAFE_KEY.fullmatch(key)
             )[:20]
             parts.append(f"keys=[{','.join(keys)}]")
-            data_type = type(payload["data"]).__name__ if "data" in payload else "missing"
-            parts.append(f"data_type={data_type}")
-            provider = []
-            for field in _PROVIDER_FIELDS:
-                if field not in payload:
-                    continue
-                rendered = _safe_primitive(payload[field])
-                if rendered is not None:
-                    provider.append(f"{field}={rendered}")
-            if provider:
-                parts.append(f"provider=[{','.join(provider)}]")
         super().__init__(f"Turkish response failure ({', '.join(parts)})"[:320])
 
 
@@ -158,7 +199,7 @@ def _parse_tk_dt(s: object, iata: str) -> datetime | None:
 
 
 def _flight_number(seg: dict) -> str | None:
-    """"TK 12" from a segment's flightCode {airlineCode, flightNumber}."""
+    """ "TK 12" from a segment's flightCode {airlineCode, flightNumber}."""
     fc = seg.get("flightCode")
     if not isinstance(fc, dict):
         return None
@@ -204,7 +245,7 @@ class TurkishScraper(BrowserScraper):
     # On the Azure IP, PerimeterX challenges the availability call with an HTTP 428 crypto
     # challenge (``sec-cp-challenge``); PX's own JS solves it in the background within a few
     # seconds, after which a retry returns data. Retry in-page up to this many times.
-    _px_retries = 4
+    _px_retries = 1
     _px_wait_s = 10.0
 
     # Conservative cadence (mirrors Delta): light window, gentle pacing.
@@ -249,15 +290,19 @@ class TurkishScraper(BrowserScraper):
             "     moduleType:'AWARD',passengerTypeList:[{quantity:1,code:'ADULT'}],"
             "     originDestinationInformationList:[{originAirportCode:O,destinationAirportCode:D,"
             "     departureDate:DT}],savedDate:new Date().toISOString()};"
+            "   let attempts=0,statuses=[];"
             "   for(let i=0;i<=RETRIES;i++){let r,t;"
+            "     attempts+=1;"
             "     try{r=await fetch(URL,{method:'POST',headers:hdrs(),body:JSON.stringify(body),"
             "       credentials:'include'});t=await r.text();}catch(e){"
-            "       return JSON.stringify({kind:'transport'});}"
+            "       return JSON.stringify({kind:'transport',attempts,statuses});}"
+            "     statuses.push(r.status);"
             "     if(r.status===428||t.indexOf('sec-cp-challenge')>=0){"
             "       if(i<RETRIES){await sleep(WAIT);continue;}"
-            "       return JSON.stringify({kind:'challenge',status:r.status});}"
-            "     return JSON.stringify({kind:'response',status:r.status,text:t});}"
-            "   return JSON.stringify({kind:'challenge'});"
+            "       return JSON.stringify({kind:'challenge',status:r.status,attempts,statuses});}"
+            "     return JSON.stringify({kind:'response',status:r.status,"
+            "       attempts,statuses,text:t});}"
+            "   return JSON.stringify({kind:'transport',attempts,statuses});"
             "})()"
         )
 
@@ -279,6 +324,14 @@ class TurkishScraper(BrowserScraper):
         if not isinstance(wire, dict):
             raise TurkishResponseError("non_json")
 
+        metadata = _transport_metadata(wire)
+        if metadata is None:
+            raise TurkishResponseError("transport")
+        attempts, statuses = metadata
+        for attempt in range(attempts):
+            status_code = statuses[attempt] if attempt < len(statuses) else None
+            self._record_request(status_code, retry=attempt > 0)
+
         kind = wire.get("kind")
         status = wire.get("status")
         if kind == "challenge":
@@ -299,20 +352,17 @@ class TurkishScraper(BrowserScraper):
             raise TurkishResponseError("missing_envelope", status=status)
         return _ResponsePayload(data, status)
 
-    def normalize(
-        self, raw: dict, origin: str, dest: str, travel_date: date
-    ) -> list[FlightRecord]:
+    def normalize(self, raw: dict, origin: str, dest: str, travel_date: date) -> list[FlightRecord]:
         """Map the availability response → FlightRecords: one per (itinerary × priced cabin)."""
         status = getattr(raw, "http_status", None)
         if not isinstance(raw, dict):
             raise TurkishResponseError("missing_envelope", status=status)
         if _is_perimeterx_block_envelope(raw, status):
             raise ScraperBlockedError("Turkish PerimeterX block envelope (status=403)")
-        if isinstance(status, int) and not 200 <= status < 300:
-            category = "unsuccessful" if raw.get("success") is False else "http_error"
-            raise TurkishResponseError(category, status=status, payload=raw)
         if raw.get("success") is False:
-            raise TurkishResponseError("unsuccessful", status=status, payload=raw)
+            raise TurkishResponseError("provider_failed", status=status, payload=raw)
+        if isinstance(status, int) and not 200 <= status < 300:
+            raise TurkishResponseError("http_error", status=status, payload=raw)
         data = raw.get("data")
         if not isinstance(data, dict):
             raise TurkishResponseError("missing_envelope", status=status, payload=raw)
@@ -352,8 +402,13 @@ class TurkishScraper(BrowserScraper):
         return list(seen.values())
 
     def _records_for_option(
-        self, opt: dict, origin: str, dest: str, travel_date: date,
-        now: datetime, expires_at: datetime,
+        self,
+        opt: dict,
+        origin: str,
+        dest: str,
+        travel_date: date,
+        now: datetime,
+        expires_at: datetime,
     ) -> list[FlightRecord]:
         segs = [s for s in (opt.get("segmentList") or []) if isinstance(s, dict)]
         if not segs:
@@ -372,7 +427,8 @@ class TurkishScraper(BrowserScraper):
         aircraft = segs[0].get("equipmentCode")
         aircraft_str = aircraft[:10] if isinstance(aircraft, str) and aircraft else None
         layovers = [
-            s.get("arrivalAirportCode") for s in segs[:-1]
+            s.get("arrivalAirportCode")
+            for s in segs[:-1]
             if isinstance(s.get("arrivalAirportCode"), str)
         ]
         layover_str = ",".join(layovers) if layovers else None
