@@ -152,6 +152,17 @@ class CashFareRecord:
             raise ValueError("expires_at_utc must be after scraped_at_utc")
 
 
+@dataclass(frozen=True)
+class RequestStats:
+    """Bounded counters for availability requests made by one scraper instance."""
+
+    attempts: int = 0
+    retries: int = 0
+    blocked: int = 0
+    rate_limited: int = 0
+    server_errors: int = 0
+
+
 class BaseScraper(ABC):
     """
     Abstract base class for all airline award scrapers.
@@ -181,6 +192,34 @@ class BaseScraper(ABC):
     sparse_step: int = SCRAPE_SPARSE_STEP
     # Max routes scraped per refresh run (bounds run time under refresh_interval_min).
     max_routes_per_run: int = 12
+
+    def _ensure_request_stats(self) -> None:
+        if not hasattr(self, "_availability_attempts"):
+            self._availability_attempts = 0
+            self._availability_retries = 0
+            self._availability_blocked = 0
+            self._availability_rate_limited = 0
+            self._availability_server_errors = 0
+
+    def _record_request(self, status_code: int | None, *, retry: bool = False) -> None:
+        """Record one availability attempt without retaining request details."""
+        self._ensure_request_stats()
+        self._availability_attempts += 1
+        self._availability_retries += int(retry)
+        self._availability_blocked += int(status_code in (403, 406))
+        self._availability_rate_limited += int(status_code == 429)
+        self._availability_server_errors += int(status_code is not None and status_code >= 500)
+
+    def request_stats(self) -> RequestStats:
+        """Return a bounded snapshot of availability requests made by this scraper."""
+        self._ensure_request_stats()
+        return RequestStats(
+            attempts=self._availability_attempts,
+            retries=self._availability_retries,
+            blocked=self._availability_blocked,
+            rate_limited=self._availability_rate_limited,
+            server_errors=self._availability_server_errors,
+        )
 
     @abstractmethod
     def fetch_raw(self, origin: str, dest: str, travel_date: date) -> dict:
@@ -361,7 +400,13 @@ class HttpScraper(BaseScraper):
         429/5xx so the tenacity ``@retry`` wrapping this method backs off and retries.
         """
         self._prime_session()
-        response = self._client.request(method, url, params=params, json=json, headers=headers)
+        try:
+            response = self._client.request(method, url, params=params, json=json, headers=headers)
+        except (httpx.TimeoutException, httpx.RemoteProtocolError):
+            self._record_request(None, retry=True)
+            raise
+        status = response.status_code
+        self._record_request(status, retry=status in (429, 500, 502, 503, 504))
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

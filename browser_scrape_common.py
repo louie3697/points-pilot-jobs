@@ -45,6 +45,7 @@ class ScrapeOutcome:
     routes_zero: int
     blocked: bool
     stopped_early: bool
+    upstream_requests: int
 
     @property
     def exit_code(self) -> int:
@@ -269,7 +270,7 @@ def run_scrape(
     from pipeline.normalizer import filter_valid, stamp_expiry
     from pipeline.obs import ship_metric
     from pp_db.autocommit import close_connection, upsert_flights
-    from scrapers.base import ScraperBlockedError
+    from scrapers.base import RequestStats, ScraperBlockedError
 
     queue_mode = route_jobs is not None
     blocked_route = None
@@ -390,6 +391,9 @@ def run_scrape(
             logger.error("Database cleanup failed: %s", exc)
             error_count += 1
 
+    request_stats = scraper.request_stats() if hasattr(scraper, "request_stats") else RequestStats()
+    upstream_requests = request_stats.attempts
+
     if blocked:
         status: ScrapeStatus = "blocked"
     elif error_count and routes_with_progress == 0:
@@ -411,6 +415,7 @@ def run_scrape(
         routes_zero=routes_zero,
         blocked=blocked,
         stopped_early=stopped_early,
+        upstream_requests=upstream_requests,
     )
 
     duration_s = round(time.monotonic() - started, 1)
@@ -426,6 +431,7 @@ def run_scrape(
             "routes_zero": routes_zero,
             "records": total,
             "errors": error_count,
+            "upstream_requests": upstream_requests,
             "duration_s": duration_s,
             "blocked": blocked,
             "stopped_early": stopped_early,

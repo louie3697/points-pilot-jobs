@@ -1,12 +1,13 @@
-"""Queue-mode (`build_queue_plan` + adaptive marking in `run_scrape`) for the shared cron runner.
+"""Database-backed queue-mode tests for the shared cron runner.
 
 The legacy on-demand path (`run_scrape(..., route_jobs=None)`) is exercised by the per-airline
-`_build_plan`/`_parse_dates_csv` tests; these focus on the new queue-aware path.
+`_build_plan`/`_parse_dates_csv` tests. Hermetic shared-runner tests live in their own modules;
+these focus on the queue-aware path.
 
 `run_scrape` upserts flights and closes connections through the `pp_db.autocommit` facade, and
 `build_queue_plan`→`QueueManager` reads `pp.routes_queue` from Postgres, so these drive the real
 `pp` container. Seeding goes through the facade (the path the code under test uses) and a couple of
-raw UPDATEs force routes due. Skips if `DATABASE_URL` is unset.
+raw UPDATEs force routes due. Each database test skips if `DATABASE_URL` is unset.
 """
 
 import logging
@@ -15,11 +16,10 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-if not os.environ.get("DATABASE_URL"):
-    pytest.skip(
-        "DATABASE_URL unset — run_scrape queue-mode test needs a live pp schema",
-        allow_module_level=True,
-    )
+requires_database = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL unset — queue-mode test needs a live pp schema",
+)
 
 from sqlalchemy import text  # noqa: E402
 
@@ -29,7 +29,7 @@ from pp_db import autocommit as db  # noqa: E402
 from pp_db.engine import get_engine  # noqa: E402
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def clean_routes():
     """Empty routes_queue around each test so the seeded due-set is deterministic. ``run_scrape``'s
     own ``close_connection()`` (the facade's) is safe — it just drops the thread-local conn."""
@@ -47,7 +47,8 @@ def _seed_due(n, airline="delta"):
         c.execute(text("UPDATE pp.routes_queue SET next_scrape_at_utc = now() - INTERVAL '1 hour'"))
 
 
-def test_build_queue_plan_strides_disjoint_and_caps():
+@requires_database
+def test_build_queue_plan_strides_disjoint_and_caps(clean_routes):
     _seed_due(12)
     today = date(2026, 6, 18)
     jobs0, dates = common.build_queue_plan(
@@ -63,7 +64,8 @@ def test_build_queue_plan_strides_disjoint_and_caps():
     assert len(dates) == 3
 
 
-def test_run_scrape_queue_mode_marks_adaptively():
+@requires_database
+def test_run_scrape_queue_mode_marks_adaptively(clean_routes):
     _seed_due(1)
     today = date(2026, 6, 18)
     route_jobs, dates = common.build_queue_plan(
@@ -100,7 +102,8 @@ def test_run_scrape_queue_mode_marks_adaptively():
     assert row is not None  # the scraped route was marked adaptively
 
 
-def test_run_scrape_queue_mode_blocked_route_stays_due():
+@requires_database
+def test_run_scrape_queue_mode_blocked_route_stays_due(clean_routes):
     """A blocked route is not marked scraped, but it is backed off briefly."""
     from scrapers.base import ScraperBlockedError
 
@@ -149,7 +152,10 @@ def test_run_scrape_queue_mode_blocked_route_stays_due():
     assert expected_min <= delta <= expected_max
 
 
-def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(monkeypatch):
+@requires_database
+def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(
+    monkeypatch, clean_routes
+):
     from scrapers.base import ScraperBlockedError
 
     metrics: list[dict] = []
@@ -194,7 +200,8 @@ def test_run_scrape_queue_mode_metric_includes_block_details_and_queue_pressure(
     assert metric["blocked_backoff_min"] == SCRAPER_BLOCK_COOLDOWN_MIN
 
 
-def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch):
+@requires_database
+def test_run_scrape_queue_mode_metric_uses_actual_due_backlog(monkeypatch, clean_routes):
     metrics: list[dict] = []
     monkeypatch.setattr("pipeline.obs.ship_metric", lambda payload: metrics.append(payload))
     monkeypatch.setattr(common, "freshness", lambda *a, **k: {})
