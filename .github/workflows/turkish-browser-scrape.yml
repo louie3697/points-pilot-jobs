@@ -2,7 +2,7 @@ name: turkish-browser-scrape
 
 # Turkish Airlines Miles&Smiles award scrape, run entirely in this repo (GH Actions / Azure IP
 # clears Turkish's TLS-fingerprint block + PerimeterX where Fly's IP can't). While the upstream
-# response is unsuccessful, scheduled work is a daily one-route, one-date recovery probe. Headful
+# response is unsuccessful, scheduled work is a monthly one-route, one-date recovery probe. Headful
 # Chrome under xvfb. Writes Turkish rows into Postgres `flights`. The availability API is the public
 # /api/v1/availability (moduleType:AWARD); session headers are client-generated UUIDs and PX 428
 # crypto-challenges are auto-solved + retried in-page. (websockets pinned <15 — see requirements.)
@@ -22,7 +22,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 10 * * *"   # daily at 10:00 UTC (staggered clear of delta 08:00 + southwest 09:00)
+    - cron: "0 10 1 * *"   # day 1 at 10:00 UTC (staggered clear of delta 08:00 + southwest 09:00)
 
 permissions:
   contents: read

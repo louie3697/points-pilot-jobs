@@ -4,7 +4,7 @@ name: delta-browser-scrape
 # Akamai edge block — HTTP 200 — where Fly's IP gets 444). The scrapers/ config/ pp_db/ pipeline/
 # packages are VENDORED from points-pilot-scrapers (see VENDORED_DELTA.md), so no cross-repo
 # checkout / PAT is needed. Headful Chrome under xvfb (Akamai challenges headless). Writes Delta
-# rows into Postgres `flights`. While Delta returns HTTP 444, scheduled work is a single weekly,
+# rows into Postgres `flights`. While Delta returns HTTP 444, scheduled work is a single monthly,
 # one-route recovery probe. Manual single-route dispatch remains available.
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 8 * * 0"  # one weekly recovery probe while HTTP 444 persists
+    - cron: "0 8 1 * *"  # one monthly recovery probe while HTTP 444 persists
 
 permissions:
   contents: read
