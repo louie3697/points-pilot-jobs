@@ -34,12 +34,12 @@ def test_delta_workflow_shard_matrix_is_consistent():
     assert env["CRON_TIME_BUDGET_S"] == "7200"
 
 
-def test_delta_workflow_runs_once_weekly_and_keeps_manual_dispatch():
+def test_delta_workflow_runs_once_monthly_and_keeps_manual_dispatch():
     with open(_WF) as f:
         wf = yaml.safe_load(f)
     schedule = wf[True]["schedule"]
     crons = [s["cron"] for s in schedule]
-    assert crons == ["0 8 * * 0"]
+    assert crons == ["0 8 1 * *"]
     assert "workflow_dispatch" in wf[True]
 
 
@@ -112,7 +112,7 @@ def test_dense_sparse_recovery_horizon_is_exactly_one_date():
 
 
 def test_delta_cron_uses_exactly_one_recovery_date(monkeypatch):
-    """The weekly recovery cron must remain one selected route by one date."""
+    """The monthly recovery cron must remain one selected route by one date."""
     import delta_browser_scrape as ep
 
     captured = {}
