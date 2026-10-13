@@ -21,8 +21,8 @@ database (the `pp` schema) through the vendored **`pp_db`** data layer (`DATABAS
 | `etihad_validate.py` | `etihad-validate.yml` | dispatch-only (no schedule) | Onboarding/regression check: runs the Etihad scraper against a couple of US↔AUH routes under `xvfb` on the Azure IP and prints the records. No DB write. |
 
 <!-- coverage-expansion 2026-06-23 concurrency: award scrapers are staggered by UTC slot
-(Alaska 01:17/07:17/13:17/19:17 x5, JetBlue Sunday 20:37 x1 one-date probe, Cash 06:15/14:15/22:15 x6,
-Delta 08:00 x1 recovery probe, Southwest 09:00 x1, Turkish 10:00 x1, Etihad 11:00 x2). Planned peak
+(Alaska 01:17/07:17/13:17/19:17 x5, JetBlue monthly day 1 20:37 x1 one-date probe, Cash 06:15/14:15/22:15 x6,
+Delta monthly day 1 08:00 x1 recovery probe, Southwest 09:00 x1, Turkish monthly day 1 10:00 x1, Etihad 11:00 x2). Planned peak
 overlap can reach roughly 13 jobs, still under the 20-job ceiling. -->
 
 `obs.py` is the shared Better Stack shipper used by the transfer jobs; the browser
